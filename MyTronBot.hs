@@ -4,6 +4,8 @@
 import System.IO (hSetBuffering, stdin, stdout, BufferMode(..))
 import qualified System.Random as R (split)
 import System.Random (StdGen, RandomGen, newStdGen, randomR)
+import System.Time (ClockTime, TimeDiff(..), getClockTime, diffClockTimes)
+
 import Control.Monad (replicateM, liftM)
 
 import Data.List (sort, unfoldr, maximumBy)
@@ -22,34 +24,50 @@ type TronMap = UArray (Int, Int) Char
 -- type TronMap = DiffUArray (Int, Int) Char
 
 
+
+-- constants
+exploratoryConstant :: Float
+exploratoryConstant = 1
+
+uctTimePerMove :: TimeDiff
+uctTimePerMove = TimeDiff {
+                   tdPicosec = 900000000000
+                 , tdYear = 0
+                 , tdMonth = 0
+                 , tdDay = 0
+                 , tdHour = 0
+                 , tdMin = 0
+                 , tdSec = 0
+                 }
+
+
+
 setBuffers :: IO ()
 setBuffers = do
     hSetBuffering stdin LineBuffering
     hSetBuffering stdout LineBuffering
 
 main :: IO ()
-main = newStdGen >>= playBot uctBot
-
+main = playBot uctBot
                                      
-playBot :: (GameState -> StdGen -> IO (Move, StdGen)) -> StdGen -> IO ()
-playBot bot starting = do
+playBot :: (GameState -> IO Move) -> IO ()
+playBot bot = do
     setBuffers
-    playTurns bot starting
+    playTurns bot
 
-playTurns :: (GameState -> StdGen -> IO (Move, StdGen))
-             -> StdGen
-             -> IO ()
-playTurns bot rGen = do
+playTurns :: (GameState -> IO Move) -> IO ()
+playTurns bot = do
   sizeLine <- getLine
   [w,h] <- return $ map readInt (words sizeLine)
   -- str <- getContents >>= (return . concat . take h . lines)
   str <- liftM concat $ replicateM h getLine
-  gameState <- return $ newGameState w h str
-  (move, rGen') <- bot gameState rGen
+  rGen <- newStdGen
+  gameState <- return $ newGameState w h str rGen
+  move <- bot gameState
   putStrLn $ makeMove move
-  playTurns bot rGen'
+  playTurns bot
     where 
-      newGameState w h str =
+      newGameState w h str rGen =
           GameState { getTronMap = tronMap
                     , ourRandomGen = rGen
                     , moveHistory = []
@@ -68,56 +86,51 @@ playTurns bot rGen = do
                 $ zip [(x,y) | y <- [1 .. h], x <- [1 .. w]] str
 
 
-uctBot :: GameState -> StdGen -> IO (Move, StdGen)
-uctBot state rGen = return $
-    case possibleMoves tronMap (playerPos state) of
+uctBot :: GameState -> IO Move
+uctBot state =
+    case possibleMoves
+             (getTronMap state)
+             (playerPos state) of
       [] ->
           trace "uctBot no possible moves, go North"
-           (North, rGen)
+                return North
       [onlyMove] ->
           trace ("uctBot only one move: " ++ show onlyMove)
-           (onlyMove, rGen)
-      _otherwise -> (move, g')
-    where
-      move =
-          case pv of
-            [] ->
-                trace "uctBot uct found no moves, go North"
-                North
-            pv' ->
-                trace ("uctBot\n"
-                       ++ show alternateFirstMoves ++ "\n"
-                       -- ++ show pv' ++ "\n"
-                      )
-                snd $ last $ moveHistory $ nodeState $
-                    head pv'
+                return onlyMove
+      _otherwise ->
+          (do
+            t <- uct state
+            pv <- return $ principalVariation t
+            return $ trace ("uctBot\n" ++ (alternateFirstMoves t)) moveFromPv pv)
 
-      alternateFirstMoves =
-          map rootLabel $ reverse $ sort $ subForest t
+moveFromPv :: [UctLabel GameState] -> Move
+moveFromPv pv =
+    snd $ last $ moveHistory $ nodeState $ head pv
 
-      pv = principalVariation t
-      t = uct state 1000 g
+alternateFirstMoves :: (UctNode a) => Tree (UctLabel a) -> String
+alternateFirstMoves t =
+    show $ map rootLabel $ reverse $ sort $ subForest t
 
-      tronMap = getTronMap state
-      (g, g') = R.split rGen
 
-uct :: (UctNode a, RandomGen g) => a -> Int -> g -> Tree (UctLabel a)
-uct initState n rGen =
-    tree (uctZipper (fromTree $ makeNodeWithChildren initState) n rGen)
+uct :: (UctNode a) => a -> IO (Tree (UctLabel a))
+uct initState =
+    getClockTime >>= uctZipper (fromTree $ makeNodeWithChildren initState)
 
-uctZipper :: (UctNode a, RandomGen g) =>
+uctZipper :: (UctNode a) =>
              TreeLoc (UctLabel a) ->
-             Int ->
-             g ->
-             TreeLoc (UctLabel a)
-uctZipper loc 0 _rGen = loc
-uctZipper loc n rGen =
-    if done
-    then loc'
-    else uctZipper loc' (n-1) rGen''
-    where
-      (loc', done) = uctZipperDown loc rGen'
-      (rGen', rGen'') = R.split rGen
+             ClockTime ->
+             IO (Tree (UctLabel a))
+uctZipper loc startTime = do
+  rGen <- newStdGen
+  (loc', done) <- return $ uctZipperDown loc rGen
+  (if done
+   then return $ tree loc'
+   else (do
+          now <- getClockTime
+          (if (diffClockTimes now startTime) > uctTimePerMove
+           then return $ tree loc'
+           else uctZipper loc' startTime)))
+
 
 
 
@@ -171,7 +184,9 @@ instance UctNode GameState where
         finalResult' state $ lastToMove state
 
     randomEvalOnce state =
-      return $ runOneRandom state (ourRandomGen state)
+      return $ runOneRandom (state {ourRandomGen = rGen'}) rGen
+      where
+        (rGen, rGen') = R.split $ ourRandomGen state
 
     children state =
         -- trace ("children " ++
@@ -471,9 +486,6 @@ defaultUctLabel = UctLabel {
 
 
 
-exploratoryC :: Float
-exploratoryC = 1
-
 
 
 uctZipperDown  :: (UctNode a, RandomGen g) => TreeLoc (UctLabel a) -> g -> ((TreeLoc (UctLabel a)), Bool)
@@ -603,7 +615,7 @@ uctValue parentVisits node =
     where
       value =
           winningProb node
-          + (exploratoryC
+          + (exploratoryConstant
              * sqrt
              (log (fromIntegral parentVisits)
               / fromIntegral (visits node)))
