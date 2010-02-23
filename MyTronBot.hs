@@ -8,7 +8,8 @@ import System.Time (ClockTime, TimeDiff(..), getClockTime, diffClockTimes)
 
 import Control.Monad (replicateM, liftM)
 
-import Data.List (sort, unfoldr, maximumBy)
+import Data.List (unfoldr, maximumBy)
+
 import Data.Maybe (fromJust)
 import Data.Tree (Tree(..), Forest)
 import Data.Ord (comparing)
@@ -17,8 +18,8 @@ import Text.Printf (printf)
 -- import Data.Array.Diff
 import Data.Array.Unboxed
 
-import Debug.Trace (trace)
-
+-- import Debug.Trace (trace)
+-- import Data.List (sort)
 
 type TronMap = UArray (Int, Int) Char
 -- type TronMap = DiffUArray (Int, Int) Char
@@ -92,24 +93,26 @@ uctBot state =
              (getTronMap state)
              (playerPos state) of
       [] ->
-          trace "uctBot no possible moves, go North"
+          -- trace "uctBot no possible moves, go North"
                 return North
       [onlyMove] ->
-          trace ("uctBot only one move: " ++ show onlyMove)
+          -- trace ("uctBot only one move: " ++ show onlyMove)
                 return onlyMove
       _otherwise ->
           (do
             t <- uct state
             pv <- return $ principalVariation t
-            return $ trace ("uctBot\n" ++ (alternateFirstMoves t)) moveFromPv pv)
+            return $ moveFromPv pv)
+            -- return $ trace ("uctBot\n" ++ (alternateFirstMoves t)) moveFromPv pv)
+
+-- alternateFirstMoves :: (UctNode a) => Tree (UctLabel a) -> String
+-- alternateFirstMoves t =
+--     show $ map rootLabel $ reverse $ sort $ subForest t
+
 
 moveFromPv :: [UctLabel GameState] -> Move
 moveFromPv pv =
     snd $ last $ moveHistory $ nodeState $ head pv
-
-alternateFirstMoves :: (UctNode a) => Tree (UctLabel a) -> String
-alternateFirstMoves t =
-    show $ map rootLabel $ reverse $ sort $ subForest t
 
 
 uct :: (UctNode a) => a -> IO (Tree (UctLabel a))
@@ -210,7 +213,7 @@ runOneRandom initState initGen =
     where
       run :: GameState -> StdGen -> Int -> Float
       run _ _ 1000 =
-          trace "run returning after 1000 iterations"
+          -- trace "run returning after 1000 iterations"
           0.5
       run state rGen runCount =
           if isTerminalNode state'
