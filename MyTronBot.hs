@@ -1,11 +1,17 @@
 import System.IO --(hSetBuffering, stdin, stdout, LineBuffering)
-import System.Random (StdGen,newStdGen,randomR,split)
-import Data.List (foldl',findIndex,sort)
+import System.Random (StdGen, newStdGen, randomR, split)
+import Data.List (foldl', findIndex, sort)
 import Debug.Trace (trace)
 
 import Data.Maybe (fromJust)
 import Data.Tree (Tree(..))
 import Data.Tree.UCT
+-- import Data.Array.Diff
+import Data.Array.IArray
+import Data.Array.Unboxed
+
+-- type TronMap = DiffArray (Int, Int) Spot
+type TronMap = UArray (Int, Int) Char
 
 setBuffers = do
     hSetBuffering stdin LineBuffering
@@ -16,7 +22,7 @@ main = do
   playBot uctBot rGen
 
                                      
-playBot :: ([[Spot]] -> a -> (Move, a)) -> a -> IO ()
+playBot :: (GameState -> StdGen -> (Move, StdGen)) -> StdGen -> IO ()
 playBot bot starting = do
     setBuffers
     interact ((playTurns bot starting) . lines)
@@ -29,6 +35,12 @@ readSpot ' ' = Blank
 readSpot '1' = Player
 readSpot '2' = Enemy
 
+showSpot Wall = '#'
+showSpot Blank = ' '
+showSpot Player = '1'
+showSpot Enemy = '2'
+
+
 makeMove North = "1"
 makeMove East = "2"
 makeMove South = "3"
@@ -39,16 +51,37 @@ playTurns bot pastValue str =
     -- trace ("playTurns " ++ (show move))
     (makeMove move) ++ "\n" ++ playTurns bot history (drop (h+1) str)
     where [w,h] = map readInt (words $ head str)
-          tronMap = map (map readSpot) (take h (tail str))
+
+          gameState =
+              GameState { getTronMap = tronMap
+                        , ourRandomGen = pastValue
+                        , moveHistory = []
+                        , playerCrashed = False
+                        , enemyCrashed = False
+                        , playerPos = initPos tronMap Player
+                        , enemyPos = initPos tronMap Enemy
+                        , maxX = w
+                        , maxY = h
+                        , toMove = Player
+                        }
+          tronMap =
+              array
+              ((1, 1), (w, h))
+              $ zip [(x,y) | y <- [1 .. h], x <- [1 .. w]]
+              -- $ map readSpot
+              $ concat $ tail str
+
+          -- tronMap = map (map readSpot) (take h (tail str))
 	  (move, history) =
               -- trace ("playTurns\n" ++
               --        (unlines $ map (unwords . (map show)) tronMap))
-              bot tronMap pastValue
+              bot gameState pastValue
 
 
 
 data Spot = Wall | Blank | Player | Enemy deriving Eq
 data Move = North | East | South | West deriving (Eq, Show)
+
 
 instance Show Spot where
     show Wall = "#"
@@ -57,21 +90,18 @@ instance Show Spot where
     show Enemy = "2"
 
 data GameState = GameState {
-      getTronMap      :: [[Spot]]
+      getTronMap      :: TronMap
      ,moveHistory     :: [(Spot, Move)]
      ,ourRandomGen    :: StdGen
-     ,simulCount      :: Int
      ,playerCrashed   :: Bool
      ,enemyCrashed    :: Bool
+     ,playerPos       :: (Int,Int)
+     ,enemyPos        :: (Int,Int)
+     ,maxX            :: Int
+     ,maxY            :: Int
+     ,toMove          :: Spot
     }
 
-newGameState tronMap rGen =
-    GameState { getTronMap = tronMap,
-                ourRandomGen = rGen,
-                moveHistory = [],
-                playerCrashed = False,
-                enemyCrashed = False,
-                simulCount = 100 }
 
 instance Show GameState where
     show state =
@@ -92,10 +122,11 @@ instance UctNode GameState where
               (playerCrashed state) || (enemyCrashed state)
 
     finalResult state =
-        -- trace ("finalResult " ++
-        --        show (((playerCrashed state), (enemyCrashed state)),who,result))
-               -- show moveHistory state) ++
-               -- showMap (getTronMap state) ++
+        -- trace ("finalResult "
+        --        ++ show (((playerCrashed state), (enemyCrashed state)),who,result)
+        --        ++ show (moveHistory state)
+        --        -- ++ showMap (getTronMap state)
+        --       )
         result
         where
           result = 
@@ -124,7 +155,7 @@ instance UctNode GameState where
           moves =
               case possibleMoves
                    tronMap
-                   (pos tronMap (toMove state)) of
+                   (moverPos state) of
                 [] -> [North]
                 ls -> ls
           tronMap = getTronMap state
@@ -152,6 +183,42 @@ finalResult2 state who =
                       Enemy -> 0.0
                 (False, False) ->
                     error "finalResult called when neither player crashed"
+
+
+
+uctBot :: GameState -> StdGen -> (Move, StdGen)
+uctBot state rGen =
+    case possibleMoves tronMap (playerPos state) of
+      [] ->
+          trace ("uctBot no possible moves, go North")
+           (North, rGen)
+      [onlyMove] ->
+          trace ("uctBot only one move: " ++ show onlyMove)
+           (onlyMove, rGen)
+      _otherwise -> (move, g')
+    where
+      move =
+          case pv of
+            [] ->
+                trace ("uctBot uct found no moves, go North")
+                North
+            pv' ->
+                trace ("uctBot\n"
+                       ++ show alternateFirstMoves ++ "\n"
+                       -- ++ show pv' ++ "\n"
+                      )
+                snd $ last $ moveHistory $ nodeState $
+                    head $ pv'
+
+      alternateFirstMoves =
+          map rootLabel $ reverse $ sort $ subForest t
+
+      pv = principalVariation t
+      t = uct state 5000 g
+      
+      tronMap = getTronMap state
+      (g, g') = split rGen
+
 
 
 runOneRandom :: GameState -> StdGen -> Float
@@ -188,7 +255,7 @@ genMoveRand state rGen =
             [] -> (North, rGen)
             [singleMove] -> (singleMove, rGen)
             moves -> pick moves rGen
-      moveList = possibleMoves tronMap (pos tronMap (toMove state))
+      moveList = possibleMoves tronMap (moverPos state)
       tronMap = getTronMap state
 
 pick :: (Show a) => [a] -> StdGen -> (a, StdGen)
@@ -220,15 +287,19 @@ updateGameState state move =
     state'
     where
       state' =
-          state { getTronMap = tronMap',
-                  moveHistory = moveHistory',
-                  playerCrashed = playerCrashed',
-                  enemyCrashed = enemyCrashed' }
+          state { getTronMap = tronMap'
+                , moveHistory = moveHistory'
+                , playerCrashed = playerCrashed'
+                , enemyCrashed = enemyCrashed'
+                , playerPos = playerPos'
+                , enemyPos = enemyPos'
+                , toMove = lastToMove state
+                }
 
       playerCrashed' =
           case who of
             Player ->
-                crashed tronMap position'
+                crashed tronMap playerPos'
             Enemy ->
                 (playerCrashed state) || bothCrashed
       enemyCrashed' =
@@ -236,113 +307,77 @@ updateGameState state move =
             Player ->
                 False
             Enemy ->
-                crashed tronMap position' || bothCrashed
+                crashed tronMap enemyPos' || bothCrashed
 
-      bothCrashed = position' == pos tronMap Player
+      bothCrashed = playerPos' == enemyPos'
 
+      playerPos' =
+          case who of
+            Player -> updatePos (playerPos state) move
+            Enemy -> (playerPos state)
+      enemyPos' =
+          case who of
+            Player -> (enemyPos state)
+            Enemy -> updatePos (enemyPos state) move
 
-      tronMap' = foldl' updateList tronMap updates
-      updates = [(position, Wall),
-                 (position', who)]
+      tronMap' = tronMap // updates
+      updates = [(position, (showSpot Wall)),
+                 (position',(showSpot who))]
+
+      position =
+          case who of
+            Player -> (playerPos state)
+            Enemy -> (enemyPos state)
+      position' =
+          case who of
+            Player -> playerPos'
+            Enemy -> enemyPos'
+
 
       moveHistory' = (moveHistory state) ++ [(who, move)]
-
-      position' = updatePos position move
-      
-      -- moves = possibleMoves tronMap pos
-      position = pos tronMap who
       tronMap = getTronMap state
-
       who = toMove state
 
 
-startingValue = ()
+initPos :: TronMap -> Spot -> (Int, Int)
+initPos tronMap who =
+    fst $ head $ filter ((== (showSpot who)) . snd) $ assocs tronMap
 
--- player tronMap = (maybe 0 id (findIndex (== Player) (head $ filter (any (== Player)) tronMap)), maybe 0 id (findIndex (any (== Player)) tronMap))
-
--- enemy tronMap = (maybe 0 id (findIndex (== Enemy) (head $ filter (any (== Enemy)) tronMap)), maybe 0 id (findIndex (any (== Enemy)) tronMap))
-
-pos tronMap who =
-    (fromJust (findIndex (== who) (head $ filter (any (== who)) tronMap)), fromJust (findIndex (any (== who)) tronMap))
-
-canMove move (x,y) tronMap
-    | move == North	= if y == 0 then False else (Blank == ((tronMap !! (y-1)) !! x))
-    | move == East	= if x+1 == (length (head tronMap)) then False else (Blank == ((tronMap !! y) !! (x+1)))
-    | move == South	= if y+1 == (length tronMap) then False else (Blank == ((tronMap !! (y+1)) !! x))
-    | move == West	= if x == 0 then False else (Blank == ((tronMap !! y) !! (x-1)))
-
-
-
-
--- testBot :: [[Spot]] -> a -> (Move, a)
--- testBot tronMap b = (head ((possibleMoves tronMap (pos tronMap Player)) ++ [North]), b)
-
-uctBot :: [[Spot]] -> StdGen -> (Move, StdGen)
-uctBot tronMap rGen =
-    case possibleMoves tronMap (pos tronMap Player) of
-      [] -> (North, rGen)
-      [onlyMove] -> (onlyMove, rGen)
-      _otherwise -> (move, g')
-    where
-      move =
-          case pv of
-            [] -> North
-            pv' ->
-                trace ("uctBot\n"
-                       ++ show alternateFirstMoves ++ "\n"
-                       ++ show pv' ++ "\n"
-                      )
-                snd $ last $ moveHistory $ nodeState $
-                    head $ pv'
-
-      alternateFirstMoves =
-          map rootLabel $ reverse $ sort $ subForest t
-
-      pv = principalVariation t
-      t = uct (newGameState tronMap rGen) 1000 g
-      (g, g') = split rGen
-
-
-possibleMoves tronMap pos =
-    -- trace ("possibleMoves " ++ show pos ++
+possibleMoves :: TronMap -> (Int, Int) -> [Move]
+possibleMoves tronMap position =
+    -- trace ("possibleMoves " ++ show position ++
     --        showMap tronMap ++ show moves)
     moves
     where
       moves =
-          filter
-          (\a -> canMove a pos tronMap)
-          [North, East, South, West]
+          filter possibleMove [North, East, South, West]
+      possibleMove move =
+          (tronMap ! (updatePos position move)) /= (showSpot Wall)
 
 updatePos (x, y) North = (x, y-1)
 updatePos (x, y) South = (x, y+1)
 updatePos (x, y) East = (x+1, y)
 updatePos (x, y) West = (x-1, y)
 
-crashed tronMap (x, y) =
-    -- trace ("\ncrashed\n\n" ++ (showMap tronMap) ++ (show ((x, y), result)))
+crashed :: TronMap -> (Int, Int) -> Bool
+crashed tronMap p =
+    -- trace ("crashed: " ++ show (p, result))
     result
     where
-      result = Blank /= ((tronMap !! y) !! x)
+      result = (tronMap ! p) /= (showSpot Blank)
 
-updateList ls ((x, y), what) =
-    init as ++ [lls'] ++ bs
-    where
-      lls' = init las ++ [what] ++ lbs
-      (las, lbs) = splitAt (x+1) lls
-      lls = last as
-      (as, bs) = splitAt (y+1) ls
-
+showMap :: TronMap -> String
 showMap tronMap =
     "\n" ++
-    (unlines $ map (concat . (map show)) tronMap)
+    (show $ assocs tronMap)
     ++ "\n"
 
 completeRound state = Player == toMove state
 
-toMove state =
-    if even $ length $ moveHistory state
-    then Player
-    else Enemy
+moverPos state =
+    case toMove state of
+      Player -> playerPos state
+      Enemy -> enemyPos state
 
 lastToMove state =
     case toMove state of

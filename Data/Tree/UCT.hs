@@ -35,7 +35,6 @@ module Data.Tree.UCT (
                      ,principalVariation
                      ) where
 
-
 import Control.Monad.Random (Rand, RandomGen, evalRand)
 import Data.Maybe (fromJust)
 import Data.List (unfoldr, maximumBy)
