@@ -1,26 +1,26 @@
-{-# LANGUAGE FlexibleInstances #-}
 {-# OPTIONS -O2 -Wall -Werror -Wwarn #-}
+{-# LANGUAGE FlexibleInstances #-}
 
-import System.IO --(hSetBuffering, stdin, stdout, LineBuffering)
+import System.IO (hSetBuffering, stdin, stdout, BufferMode(..))
 import qualified System.Random as R (split)
 import System.Random (StdGen, RandomGen, newStdGen, randomR)
-import Data.List (sort, unfoldr, maximumBy)
-import Debug.Trace (trace)
+import Control.Monad (replicateM, liftM)
 
--- import Control.Monad.Random (Rand, evalRand)
+import Data.List (sort, unfoldr, maximumBy)
 import Data.Maybe (fromJust)
 import Data.Tree (Tree(..), Forest)
 import Data.Ord (comparing)
--- import Data.Array.Diff
-import Data.Array.Unboxed
 import Text.Printf (printf)
 
+-- import Data.Array.Diff
+import Data.Array.Unboxed
 
--- import Data.Tree.Zipper (TreeLoc, tree, fromTree, hasChildren, setTree, parent, getChild)
+import Debug.Trace (trace)
 
 
 type TronMap = UArray (Int, Int) Char
 -- type TronMap = DiffUArray (Int, Int) Char
+
 
 setBuffers :: IO ()
 setBuffers = do
@@ -31,69 +31,100 @@ main :: IO ()
 main = newStdGen >>= playBot uctBot
 
                                      
-playBot :: (GameState -> StdGen -> (Move, StdGen)) -> StdGen -> IO ()
+playBot :: (GameState -> StdGen -> IO (Move, StdGen)) -> StdGen -> IO ()
 playBot bot starting = do
     setBuffers
-    interact (playTurns bot starting . lines)
+    playTurns bot starting
 
-readInt :: String -> Int
-readInt = read
-
--- readSpot :: Char -> Spot
--- readSpot '#' = Wall
--- readSpot ' ' = Blank
--- readSpot '1' = Player
--- readSpot '2' = Enemy
--- readSpot _ = error "unsupported spot character"
-
-showSpot :: Spot -> Char
-showSpot Wall = '#'
-showSpot Blank = ' '
-showSpot Player = '1'
-showSpot Enemy = '2'
-
-makeMove :: Move -> String
-makeMove North = "1"
-makeMove East = "2"
-makeMove South = "3"
-makeMove West = "4"
-
-playTurns :: (GameState -> StdGen -> (Move, StdGen))
+playTurns :: (GameState -> StdGen -> IO (Move, StdGen))
              -> StdGen
-             -> [String]
-             -> String
-playTurns _bot _pastValue [] = ""
-playTurns bot pastValue str =
-    -- trace ("playTurns " ++ (show move))
-    makeMove move ++ "\n" ++ playTurns bot history (drop (h+1) str)
-    where [w,h] = map readInt (words $ head str)
-
-          gameState =
-              GameState { getTronMap = tronMap
-                        , ourRandomGen = pastValue
-                        , moveHistory = []
-                        , playerCrashed = False
-                        , enemyCrashed = False
-                        , playerPos = initPos tronMap Player
-                        , enemyPos = initPos tronMap Enemy
-                        , maxX = w
-                        , maxY = h
-                        , toMove = Player
-                        }
-          tronMap =
-              array
-              ((1, 1), (w, h))
-              $ zip [(x,y) | y <- [1 .. h], x <- [1 .. w]]
-              -- $ map readSpot
-              $ concat $ tail str
-
-          -- tronMap = map (map readSpot) (take h (tail str))
-	  (move, history) =
-              -- trace ("playTurns\n" ++
-              --        (unlines $ map (unwords . (map show)) tronMap))
-              bot gameState pastValue
+             -> IO ()
+playTurns bot rGen = do
+  sizeLine <- getLine
+  [w,h] <- return $ map readInt (words sizeLine)
+  -- str <- getContents >>= (return . concat . take h . lines)
+  str <- liftM concat $ replicateM h getLine
+  gameState <- return $ newGameState w h str
+  (move, rGen') <- bot gameState rGen
+  putStrLn $ makeMove move
+  playTurns bot rGen'
+    where 
+      newGameState w h str =
+          GameState { getTronMap = tronMap
+                    , ourRandomGen = rGen
+                    , moveHistory = []
+                    , playerCrashed = False
+                    , enemyCrashed = False
+                    , playerPos = initPos tronMap Player
+                    , enemyPos = initPos tronMap Enemy
+                    , maxX = w
+                    , maxY = h
+                    , toMove = Player
+                    }
+          where
+            tronMap =
+                array
+                ((1, 1), (w, h))
+                $ zip [(x,y) | y <- [1 .. h], x <- [1 .. w]] str
 
 
+uctBot :: GameState -> StdGen -> IO (Move, StdGen)
+uctBot state rGen = return $
+    case possibleMoves tronMap (playerPos state) of
+      [] ->
+          trace "uctBot no possible moves, go North"
+           (North, rGen)
+      [onlyMove] ->
+          trace ("uctBot only one move: " ++ show onlyMove)
+           (onlyMove, rGen)
+      _otherwise -> (move, g')
+    where
+      move =
+          case pv of
+            [] ->
+                trace "uctBot uct found no moves, go North"
+                North
+            pv' ->
+                trace ("uctBot\n"
+                       ++ show alternateFirstMoves ++ "\n"
+                       -- ++ show pv' ++ "\n"
+                      )
+                snd $ last $ moveHistory $ nodeState $
+                    head pv'
+
+      alternateFirstMoves =
+          map rootLabel $ reverse $ sort $ subForest t
+
+      pv = principalVariation t
+      t = uct state 1000 g
+
+      tronMap = getTronMap state
+      (g, g') = R.split rGen
+
+uct :: (UctNode a, RandomGen g) => a -> Int -> g -> Tree (UctLabel a)
+uct initState n rGen =
+    tree (uctZipper (fromTree $ makeNodeWithChildren initState) n rGen)
+
+uctZipper :: (UctNode a, RandomGen g) =>
+             TreeLoc (UctLabel a) ->
+             Int ->
+             g ->
+             TreeLoc (UctLabel a)
+uctZipper loc 0 _rGen = loc
+uctZipper loc n rGen =
+    if done
+    then loc'
+    else uctZipper loc' (n-1) rGen''
+    where
+      (loc', done) = uctZipperDown loc rGen'
+      (rGen', rGen'') = R.split rGen
+
+
+
+
+--------------------------------------------
+-- GameState / tron / game specific code
+--------------------------------------------
 
 data Spot = Wall | Blank | Player | Enemy deriving Eq
 data Move = North | East | South | West deriving (Eq, Show)
@@ -117,7 +148,6 @@ data GameState = GameState {
      ,maxY            :: Int
      ,toMove          :: Spot
     }
-
 
 instance Show GameState where
     show state =
@@ -155,67 +185,6 @@ instance UctNode GameState where
                 [] -> [North]
                 ls -> ls
           tronMap = getTronMap state
-
-
-finalResult' :: GameState -> Spot -> Float
-finalResult' state who =
-        -- trace ("finalResult2 "
-        --        ++ show (((playerCrashed state), (enemyCrashed state)),who,result)
-        --        ++ showMap (getTronMap state)
-        --        -- show moveHistory state) ++
-        --       )
-        result
-        where
-          result = 
-              case ((playerCrashed state), (enemyCrashed state)) of
-                (True, True) -> 0.5
-                (True, False) ->
-                    case who of
-                      Player -> 0.0
-                      Enemy -> 1.0
-                      _ -> error "finalResult' who set to non player param"
-                (False, True) ->
-                    case who of
-                      Player -> 1.0
-                      Enemy -> 0.0
-                      _ -> error "finalResult' who set to non player param"
-                (False, False) ->
-                    error "finalResult' called when neither player crashed"
-
-
-
-uctBot :: GameState -> StdGen -> (Move, StdGen)
-uctBot state rGen =
-    case possibleMoves tronMap (playerPos state) of
-      [] ->
-          trace "uctBot no possible moves, go North"
-           (North, rGen)
-      [onlyMove] ->
-          trace ("uctBot only one move: " ++ show onlyMove)
-           (onlyMove, rGen)
-      _otherwise -> (move, g')
-    where
-      move =
-          case pv of
-            [] ->
-                trace "uctBot uct found no moves, go North"
-                North
-            pv' ->
-                trace ("uctBot\n"
-                       ++ show alternateFirstMoves ++ "\n"
-                       -- ++ show pv' ++ "\n"
-                      )
-                snd $ last $ moveHistory $ nodeState $
-                    head pv'
-
-      alternateFirstMoves =
-          map rootLabel $ reverse $ sort $ subForest t
-
-      pv = principalVariation t
-      t = uct state 1000 g
-      
-      tronMap = getTronMap state
-      (g, g') = R.split rGen
 
 
 
@@ -262,6 +231,7 @@ pick as rGen =
     (as !! i, rGen')
     where
       (i, rGen') = randomR (0, (length as - 1)) rGen
+
 
 
 updateGameState :: GameState -> Move -> GameState
@@ -343,6 +313,35 @@ updateGameState state move =
       who = toMove state
 
 
+finalResult' :: GameState -> Spot -> Float
+finalResult' state who =
+        -- trace ("finalResult2 "
+        --        ++ show (((playerCrashed state), (enemyCrashed state)),who,result)
+        --        ++ showMap (getTronMap state)
+        --        -- show moveHistory state) ++
+        --       )
+        result
+        where
+          result =
+              case ((playerCrashed state), (enemyCrashed state)) of
+                (True, True) -> 0.5
+                (True, False) ->
+                    case who of
+                      Player -> 0.0
+                      Enemy -> 1.0
+                      _ -> error "finalResult' who set to non player param"
+                (False, True) ->
+                    case who of
+                      Player -> 1.0
+                      Enemy -> 0.0
+                      _ -> error "finalResult' who set to non player param"
+                (False, False) ->
+                    error "finalResult' called when neither player crashed"
+
+
+
+
+
 initPos :: TronMap -> Spot -> (Int, Int)
 initPos tronMap who =
     fst $ head $ filter ((== (showSpot who)) . snd) $ assocs tronMap
@@ -396,8 +395,28 @@ lastToMove state =
 
 
 
+readInt :: String -> Int
+readInt = read
+
+showSpot :: Spot -> Char
+showSpot Wall = '#'
+showSpot Blank = ' '
+showSpot Player = '1'
+showSpot Enemy = '2'
+
+makeMove :: Move -> String
+makeMove North = "1"
+makeMove East = "2"
+makeMove South = "3"
+makeMove West = "4"
 
 
+
+
+
+-----------------------------------------
+-- Data.Tree.UCT uct code
+-----------------------------------------
 
 
 
@@ -450,27 +469,11 @@ defaultUctLabel = UctLabel {
                   , isDone = False
                   }
 
+
+
 exploratoryC :: Float
 exploratoryC = 1
 
-uct :: (UctNode a, RandomGen g) => a -> Int -> g -> Tree (UctLabel a)
-uct initState n rGen =
-    tree (uctZipper (fromTree $ makeNodeWithChildren initState) n rGen)
-
-
-uctZipper :: (UctNode a, RandomGen g) =>
-             TreeLoc (UctLabel a) ->
-             Int ->
-             g ->
-             TreeLoc (UctLabel a)
-uctZipper loc 0 _rGen = loc
-uctZipper loc n rGen =
-    if done
-    then loc'
-    else uctZipper loc' (n-1) rGen''
-    where
-      (loc', done) = uctZipperDown loc rGen'
-      (rGen', rGen'') = R.split rGen
 
 
 uctZipperDown  :: (UctNode a, RandomGen g) => TreeLoc (UctLabel a) -> g -> ((TreeLoc (UctLabel a)), Bool)
@@ -632,8 +635,10 @@ maxChild t =
 
 
 
--- inlined Data.Tree.Zipper follows
 
+-----------------------------------------------
+-- inlined Data.Tree.Zipper follows
+-----------------------------------------------
 
 -- | A position within a 'Tree'.
 data TreeLoc a  = Loc
@@ -657,15 +662,10 @@ parent loc =
           }
     [] -> Nothing
 
--- | The top-most parent of the given location.
-root :: TreeLoc a -> TreeLoc a
-root loc = maybe loc root (parent loc)
-
 
 -- private: computes the parent for "down" operations.
 downParents :: TreeLoc a -> [(Forest a, a, Forest a)]
 downParents loc = (lefts loc, rootLabel (tree loc), rights loc) : parents loc
-
 
 
 -- | The child with the given index (starting from 0).
@@ -674,17 +674,6 @@ getChild n loc =
   do (t:ls,rs) <- splitChildren [] (subForest (tree loc)) n
      return Loc { tree = t, lefts = ls, rights = rs, parents = downParents loc }
 
--- | The first child that satisfies a predicate.
-findChild :: (Tree a -> Bool) -> TreeLoc a -> Maybe (TreeLoc a)
-findChild p loc =
-  do (ls,t,rs) <- split [] (subForest (tree loc))
-     return Loc { tree = t, lefts = ls, rights = rs, parents = downParents loc }
-
-  where split acc (x:xs) | p x  = Just (acc,x,xs)
-        split acc (x:xs)        = split (x:acc) xs
-        split _ []              = Nothing
-
-
 
 -- Conversions -----------------------------------------------------------------
 
@@ -692,26 +681,13 @@ findChild p loc =
 fromTree :: Tree a -> TreeLoc a
 fromTree t = Loc { tree = t, lefts = [], rights = [], parents = [] }
 
--- | The location of the first tree in a forest.
-fromForest :: Forest a -> Maybe (TreeLoc a)
-fromForest (t:ts) = Just Loc { tree = t, lefts = [], rights = ts, parents = [] }
-fromForest []     = Nothing
-
-
 
 -- Queries ---------------------------------------------------------------------
-
--- | Are we at the top of the tree?
-isRoot :: TreeLoc a -> Bool
-isRoot loc = null (parents loc)
 
 -- | Are we at the bottom of the tree?
 isLeaf :: TreeLoc a -> Bool
 isLeaf loc = null (subForest (tree loc))
 
--- | Do we have a parent?
-isChild :: TreeLoc a -> Bool
-isChild loc = not (isRoot loc)
 
 -- | Do we have children?
 hasChildren :: TreeLoc a -> Bool
@@ -720,25 +696,9 @@ hasChildren loc = not (isLeaf loc)
 
 -- The current tree -----------------------------------------------------------
 
-
 -- | Change the current tree.
 setTree :: Tree a -> TreeLoc a -> TreeLoc a
 setTree t loc = loc { tree = t }
-
--- | Modify the current tree.
-modifyTree :: (Tree a -> Tree a) -> TreeLoc a -> TreeLoc a
-modifyTree f loc = setTree (f (tree loc)) loc
-
-
--- | Change the label at the current node.
-setLabel :: a -> TreeLoc a -> TreeLoc a
-setLabel v loc = modifyTree (\t -> t { rootLabel = v }) loc
-
--- -- Get the current label.
--- getLabel :: TreeLoc a -> a
--- getLabel loc = rootLabel (tree loc)
-
-
 
 
 splitChildren :: [a] -> [a] -> Int -> Maybe ([a],[a])
