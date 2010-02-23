@@ -2,25 +2,25 @@
 {-# OPTIONS -O2 -Wall -Werror -Wwarn #-}
 
 import System.IO --(hSetBuffering, stdin, stdout, LineBuffering)
-import System.Random (StdGen, RandomGen, newStdGen, randomR, split)
+import qualified System.Random as R (split)
+import System.Random (StdGen, RandomGen, newStdGen, randomR)
 import Data.List (sort, unfoldr, maximumBy)
 import Debug.Trace (trace)
 
-import Control.Monad.Random (Rand, evalRand)
+-- import Control.Monad.Random (Rand, evalRand)
 import Data.Maybe (fromJust)
-import Data.Tree (Tree(..))
+import Data.Tree (Tree(..), Forest)
 import Data.Ord (comparing)
 -- import Data.Array.Diff
 import Data.Array.Unboxed
 import Text.Printf (printf)
 
 
-import Data.Tree.Zipper (TreeLoc, tree, fromTree, hasChildren, setTree, parent, getChild)
--- import Debug.Trace (trace)
+-- import Data.Tree.Zipper (TreeLoc, tree, fromTree, hasChildren, setTree, parent, getChild)
 
 
--- type TronMap = DiffArray (Int, Int) Spot
 type TronMap = UArray (Int, Int) Char
+-- type TronMap = DiffUArray (Int, Int) Char
 
 setBuffers :: IO ()
 setBuffers = do
@@ -39,12 +39,12 @@ playBot bot starting = do
 readInt :: String -> Int
 readInt = read
 
-readSpot :: Char -> Spot
-readSpot '#' = Wall
-readSpot ' ' = Blank
-readSpot '1' = Player
-readSpot '2' = Enemy
-readSpot _ = error "unsupported spot character"
+-- readSpot :: Char -> Spot
+-- readSpot '#' = Wall
+-- readSpot ' ' = Blank
+-- readSpot '1' = Player
+-- readSpot '2' = Enemy
+-- readSpot _ = error "unsupported spot character"
 
 showSpot :: Spot -> Char
 showSpot Wall = '#'
@@ -212,10 +212,10 @@ uctBot state rGen =
           map rootLabel $ reverse $ sort $ subForest t
 
       pv = principalVariation t
-      t = uct state 5000 g
+      t = uct state 1000 g
       
       tronMap = getTronMap state
-      (g, g') = split rGen
+      (g, g') = R.split rGen
 
 
 
@@ -371,11 +371,11 @@ crashed tronMap p =
     where
       result = (tronMap ! p) /= showSpot Blank
 
-showMap :: TronMap -> String
-showMap tronMap =
-    "\n" ++
-    show (assocs tronMap)
-    ++ "\n"
+-- showMap :: TronMap -> String
+-- showMap tronMap =
+--     "\n" ++
+--     show (assocs tronMap)
+--     ++ "\n"
 
 completeRound :: GameState -> Bool
 completeRound state = Player == toMove state
@@ -404,7 +404,7 @@ lastToMove state =
 class (Show a) => UctNode a where
     isTerminalNode :: a -> Bool
     finalResult :: a -> Float
-    randomEvalOnce :: (RandomGen g) => a -> Rand g Float
+    randomEvalOnce :: (RandomGen g) => a -> g -> Float
     children :: a -> [a]
 
 instance (UctNode a) => Show (UctLabel a) where
@@ -454,35 +454,36 @@ exploratoryC :: Float
 exploratoryC = 1
 
 uct :: (UctNode a, RandomGen g) => a -> Int -> g -> Tree (UctLabel a)
-uct initState n =
-    tree . evalRand (uctZipper (fromTree $ makeNodeWithChildren initState) n)
+uct initState n rGen =
+    tree (uctZipper (fromTree $ makeNodeWithChildren initState) n rGen)
 
 
 uctZipper :: (UctNode a, RandomGen g) =>
              TreeLoc (UctLabel a) ->
              Int ->
-             Rand g (TreeLoc (UctLabel a))
-uctZipper loc 0 = return loc
-uctZipper loc n = do
-  (loc', done) <- uctZipperDown loc
-  (if done
-   then return loc'
-   else uctZipper loc' (n-1))
+             g ->
+             TreeLoc (UctLabel a)
+uctZipper loc 0 _rGen = loc
+uctZipper loc n rGen =
+    if done
+    then loc'
+    else uctZipper loc' (n-1) rGen''
+    where
+      (loc', done) = uctZipperDown loc rGen'
+      (rGen', rGen'') = R.split rGen
 
 
-uctZipperDown  :: (UctNode a, RandomGen g) => TreeLoc (UctLabel a) -> Rand g ((TreeLoc (UctLabel a)), Bool)
-uctZipperDown loc
+uctZipperDown  :: (UctNode a, RandomGen g) => TreeLoc (UctLabel a) -> g -> ((TreeLoc (UctLabel a)), Bool)
+uctZipperDown loc rGen
     | hasChildren loc =
         -- trace ("uctZipperDown hasChildren, recursing "
         --        ++ (show $ nodeState $ rootLabel $ tree uctMax))
-        uctZipperDown uctMax
+        uctZipperDown uctMax rGen
     | isTerminalNode state =
         -- trace ("uctZipperDown terminal node reached")
         uctZipperUp loc (finalResult state) True
     | otherwise =
-        do
-          result <- randomEvalOnce state
-          uctZipperUp loc' result False
+        uctZipperUp loc' (randomEvalOnce state rGen) False
 
     where
       state = nodeState $ rootLabel node
@@ -493,11 +494,11 @@ uctZipperDown loc
 
       uctMax = chooseUctMax loc
 
-uctZipperUp  :: (UctNode a, RandomGen g) => TreeLoc (UctLabel a) -> Float -> Bool -> Rand g ((TreeLoc (UctLabel a)), Bool)
+uctZipperUp  :: (UctNode a) => TreeLoc (UctLabel a) -> Float -> Bool -> ((TreeLoc (UctLabel a)), Bool)
 uctZipperUp loc result done =
     case parent loc' of
       Nothing ->
-          return (loc', done)
+          (loc', done)
       Just parentLoc ->
           -- if evaluating this subtree is finished
           if done
@@ -625,3 +626,126 @@ maxChild t =
           Just (rootLabel mNode, mNode)
               where
                 mNode = maximum forest
+
+
+
+
+
+
+-- inlined Data.Tree.Zipper follows
+
+
+-- | A position within a 'Tree'.
+data TreeLoc a  = Loc
+  { tree    :: Tree a       -- ^ The currently selected tree.
+  , lefts   :: Forest a     -- ^ Siblings on the left, closest first.
+  , rights  :: Forest a     -- ^ Siblings on the right, closest first.
+  , parents :: [(Forest a, a, Forest a)]
+      -- ^ The contexts of the parents for this location.
+  } deriving (Read,Show,Eq)
+
+
+-- Moving around ---------------------------------------------------------------
+
+-- | The parent of the given location.
+parent :: TreeLoc a -> Maybe (TreeLoc a)
+parent loc =
+  case parents loc of
+    (pls,v,prs) : ps -> Just
+      Loc { tree = Node v (combChildren (lefts loc) (tree loc) (rights loc))
+          , lefts = pls, rights = prs, parents = ps
+          }
+    [] -> Nothing
+
+-- | The top-most parent of the given location.
+root :: TreeLoc a -> TreeLoc a
+root loc = maybe loc root (parent loc)
+
+
+-- private: computes the parent for "down" operations.
+downParents :: TreeLoc a -> [(Forest a, a, Forest a)]
+downParents loc = (lefts loc, rootLabel (tree loc), rights loc) : parents loc
+
+
+
+-- | The child with the given index (starting from 0).
+getChild :: Int -> TreeLoc a -> Maybe (TreeLoc a)
+getChild n loc =
+  do (t:ls,rs) <- splitChildren [] (subForest (tree loc)) n
+     return Loc { tree = t, lefts = ls, rights = rs, parents = downParents loc }
+
+-- | The first child that satisfies a predicate.
+findChild :: (Tree a -> Bool) -> TreeLoc a -> Maybe (TreeLoc a)
+findChild p loc =
+  do (ls,t,rs) <- split [] (subForest (tree loc))
+     return Loc { tree = t, lefts = ls, rights = rs, parents = downParents loc }
+
+  where split acc (x:xs) | p x  = Just (acc,x,xs)
+        split acc (x:xs)        = split (x:acc) xs
+        split _ []              = Nothing
+
+
+
+-- Conversions -----------------------------------------------------------------
+
+-- | A location corresponding to the root of the given tree.
+fromTree :: Tree a -> TreeLoc a
+fromTree t = Loc { tree = t, lefts = [], rights = [], parents = [] }
+
+-- | The location of the first tree in a forest.
+fromForest :: Forest a -> Maybe (TreeLoc a)
+fromForest (t:ts) = Just Loc { tree = t, lefts = [], rights = ts, parents = [] }
+fromForest []     = Nothing
+
+
+
+-- Queries ---------------------------------------------------------------------
+
+-- | Are we at the top of the tree?
+isRoot :: TreeLoc a -> Bool
+isRoot loc = null (parents loc)
+
+-- | Are we at the bottom of the tree?
+isLeaf :: TreeLoc a -> Bool
+isLeaf loc = null (subForest (tree loc))
+
+-- | Do we have a parent?
+isChild :: TreeLoc a -> Bool
+isChild loc = not (isRoot loc)
+
+-- | Do we have children?
+hasChildren :: TreeLoc a -> Bool
+hasChildren loc = not (isLeaf loc)
+
+
+-- The current tree -----------------------------------------------------------
+
+
+-- | Change the current tree.
+setTree :: Tree a -> TreeLoc a -> TreeLoc a
+setTree t loc = loc { tree = t }
+
+-- | Modify the current tree.
+modifyTree :: (Tree a -> Tree a) -> TreeLoc a -> TreeLoc a
+modifyTree f loc = setTree (f (tree loc)) loc
+
+
+-- | Change the label at the current node.
+setLabel :: a -> TreeLoc a -> TreeLoc a
+setLabel v loc = modifyTree (\t -> t { rootLabel = v }) loc
+
+-- -- Get the current label.
+-- getLabel :: TreeLoc a -> a
+-- getLabel loc = rootLabel (tree loc)
+
+
+
+
+splitChildren :: [a] -> [a] -> Int -> Maybe ([a],[a])
+splitChildren acc xs 0      = Just (acc,xs)
+splitChildren acc (x:xs) n  = splitChildren (x:acc) xs $! n-1
+splitChildren _ _ _         = Nothing
+
+
+combChildren :: [b] -> b -> [b] -> [b]
+combChildren ls t rs = foldl (flip (:)) (t:rs) ls
