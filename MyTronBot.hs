@@ -1,11 +1,12 @@
-{-# OPTIONS -O2 -Wall -Werror -Wwarn -XFlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS -O2 -Wall -Werror -Wwarn #-}
 
 import System.IO --(hSetBuffering, stdin, stdout, LineBuffering)
-import System.Random (StdGen, newStdGen, randomR, split)
+import System.Random (StdGen, RandomGen, newStdGen, randomR, split)
 import Data.List (sort, unfoldr, maximumBy)
 import Debug.Trace (trace)
 
-import Control.Monad.Random (Rand, RandomGen, evalRand)
+import Control.Monad.Random (Rand, evalRand)
 import Data.Maybe (fromJust)
 import Data.Tree (Tree(..))
 import Data.Ord (comparing)
@@ -27,18 +28,16 @@ setBuffers = do
     hSetBuffering stdout LineBuffering
 
 main :: IO ()
-main = do
-  rGen <- newStdGen
-  playBot uctBot rGen
+main = newStdGen >>= playBot uctBot
 
                                      
 playBot :: (GameState -> StdGen -> (Move, StdGen)) -> StdGen -> IO ()
 playBot bot starting = do
     setBuffers
-    interact ((playTurns bot starting) . lines)
+    interact (playTurns bot starting . lines)
 
 readInt :: String -> Int
-readInt a = read a
+readInt = read
 
 readSpot :: Char -> Spot
 readSpot '#' = Wall
@@ -66,7 +65,7 @@ playTurns :: (GameState -> StdGen -> (Move, StdGen))
 playTurns _bot _pastValue [] = ""
 playTurns bot pastValue str =
     -- trace ("playTurns " ++ (show move))
-    (makeMove move) ++ "\n" ++ playTurns bot history (drop (h+1) str)
+    makeMove move ++ "\n" ++ playTurns bot history (drop (h+1) str)
     where [w,h] = map readInt (words $ head str)
 
           gameState =
@@ -136,7 +135,7 @@ instance UctNode GameState where
           result = complete && anyCrashes
           complete = completeRound state
           anyCrashes =
-              (playerCrashed state) || (enemyCrashed state)
+              playerCrashed state || enemyCrashed state
 
     finalResult state =
         finalResult' state $ lastToMove state
@@ -189,7 +188,7 @@ uctBot :: GameState -> StdGen -> (Move, StdGen)
 uctBot state rGen =
     case possibleMoves tronMap (playerPos state) of
       [] ->
-          trace ("uctBot no possible moves, go North")
+          trace "uctBot no possible moves, go North"
            (North, rGen)
       [onlyMove] ->
           trace ("uctBot only one move: " ++ show onlyMove)
@@ -199,7 +198,7 @@ uctBot state rGen =
       move =
           case pv of
             [] ->
-                trace ("uctBot uct found no moves, go North")
+                trace "uctBot uct found no moves, go North"
                 North
             pv' ->
                 trace ("uctBot\n"
@@ -207,7 +206,7 @@ uctBot state rGen =
                        -- ++ show pv' ++ "\n"
                       )
                 snd $ last $ moveHistory $ nodeState $
-                    head $ pv'
+                    head pv'
 
       alternateFirstMoves =
           map rootLabel $ reverse $ sort $ subForest t
@@ -227,7 +226,7 @@ runOneRandom initState initGen =
     where
       run :: GameState -> StdGen -> Int -> Float
       run _ _ 1000 =
-          trace ("run returning after 1000 iterations")
+          trace "run returning after 1000 iterations"
           0.5
       run state rGen runCount =
           if isTerminalNode state'
@@ -262,7 +261,7 @@ pick as rGen =
     -- trace ("pick " ++ (show (as, i)))
     (as !! i, rGen')
     where
-      (i, rGen') = randomR (0, ((length as) - 1)) rGen
+      (i, rGen') = randomR (0, (length as - 1)) rGen
 
 
 updateGameState :: GameState -> Move -> GameState
@@ -300,7 +299,7 @@ updateGameState state move =
             Player ->
                 crashed tronMap playerPos'
             Enemy ->
-                (playerCrashed state) || bothCrashed
+                playerCrashed state || bothCrashed
             _ -> error "playerCrashed' who set to non player param"
       enemyCrashed' =
           case who of
@@ -339,7 +338,7 @@ updateGameState state move =
             _ -> error "position' who set to non player param"
 
 
-      moveHistory' = (moveHistory state) ++ [(who, move)]
+      moveHistory' = moveHistory state ++ [(who, move)]
       tronMap = getTronMap state
       who = toMove state
 
@@ -357,7 +356,7 @@ possibleMoves tronMap position =
       moves =
           filter possibleMove [North, East, South, West]
       possibleMove move =
-          (tronMap ! (updatePos position move)) /= (showSpot Wall)
+          (tronMap ! updatePos position move) /= showSpot Wall
 
 updatePos :: (Int, Int) -> Move -> (Int, Int)
 updatePos (x, y) North = (x, y-1)
@@ -370,12 +369,12 @@ crashed tronMap p =
     -- trace ("crashed: " ++ show (p, result))
     result
     where
-      result = (tronMap ! p) /= (showSpot Blank)
+      result = (tronMap ! p) /= showSpot Blank
 
 showMap :: TronMap -> String
 showMap tronMap =
     "\n" ++
-    (show $ assocs tronMap)
+    show (assocs tronMap)
     ++ "\n"
 
 completeRound :: GameState -> Bool
@@ -414,9 +413,9 @@ instance (UctNode a) => Show (UctLabel a) where
         printf "%.2f " (winningProb label) ++
         show (visits label) ++ dStr ++ " - "
         where
-          dStr = case isDone label of
-                   True -> "+ "
-                   False -> ""
+          dStr = if isDone label
+                 then "+ "
+                 else ""
 
 data UctLabel a = UctLabel {
      nodeState       :: a
@@ -455,8 +454,8 @@ exploratoryC :: Float
 exploratoryC = 1
 
 uct :: (UctNode a, RandomGen g) => a -> Int -> g -> Tree (UctLabel a)
-uct initState n rGen =
-    tree $ evalRand (uctZipper (fromTree $ makeNodeWithChildren initState) n) rGen
+uct initState n =
+    tree . evalRand (uctZipper (fromTree $ makeNodeWithChildren initState) n)
 
 
 uctZipper :: (UctNode a, RandomGen g) =>
@@ -466,26 +465,24 @@ uctZipper :: (UctNode a, RandomGen g) =>
 uctZipper loc 0 = return loc
 uctZipper loc n = do
   (loc', done) <- uctZipperDown loc
-  case done of
-    True -> return loc'
-    False -> uctZipper loc' (n-1)
+  (if done
+   then return loc'
+   else uctZipper loc' (n-1))
 
 
 uctZipperDown  :: (UctNode a, RandomGen g) => TreeLoc (UctLabel a) -> Rand g ((TreeLoc (UctLabel a)), Bool)
-uctZipperDown loc =
-    if hasChildren loc
-    then
+uctZipperDown loc
+    | hasChildren loc =
         -- trace ("uctZipperDown hasChildren, recursing "
         --        ++ (show $ nodeState $ rootLabel $ tree uctMax))
         uctZipperDown uctMax
-    else
-        if isTerminalNode state
-        then
-            -- trace ("uctZipperDown terminal node reached")
-            uctZipperUp loc (finalResult state) True
-        else (do
-               result <- randomEvalOnce state
-               uctZipperUp loc' result False)
+    | isTerminalNode state =
+        -- trace ("uctZipperDown terminal node reached")
+        uctZipperUp loc (finalResult state) True
+    | otherwise =
+        do
+          result <- randomEvalOnce state
+          uctZipperUp loc' result False
 
     where
       state = nodeState $ rootLabel node
@@ -561,8 +558,8 @@ makeNodeWithChildren state =
          }
 
 makeSubForest :: (UctNode a) => a -> [Tree (UctLabel a)]
-makeSubForest state =
-    map makeLeafNode $ children state
+makeSubForest =
+    map makeLeafNode . children
 
 makeLeafNode :: (UctNode a) => a -> Tree (UctLabel a)
 makeLeafNode state =
@@ -584,7 +581,7 @@ chooseUctMax loc =
 
     uctMaxChildPair =
         maximumBy
-        (comparing ((uctValue parentVisits) . fst))
+        (comparing (uctValue parentVisits . fst))
         activeSubtrees
 
     parentVisits = visits $ rootLabel $ tree loc
@@ -601,25 +598,24 @@ uctValue parentVisits node =
     value
     where
       value =
-          (winningProb node)
+          winningProb node
           + (exploratoryC
-             * (sqrt
-                ((log (fromIntegral parentVisits))
-                 / (fromIntegral (visits node)))))
-
+             * sqrt
+             (log (fromIntegral parentVisits)
+              / fromIntegral (visits node)))
 
 
 
 
 updateProb :: Float -> Int -> Float -> Float
 updateProb oldProb oldCount result =
-    ((oldProb * (fromIntegral oldCount)) + result) / (fromIntegral (oldCount + 1))
+    ((oldProb * fromIntegral oldCount) + result) / fromIntegral (oldCount + 1)
 
 
 
 principalVariation :: (UctNode a) => Tree (UctLabel a) -> [(UctLabel a)]
-principalVariation t =
-    unfoldr maxChild t
+principalVariation =
+    unfoldr maxChild
 
 maxChild :: Tree (UctLabel a) -> Maybe ((UctLabel a), Tree (UctLabel a))
 maxChild t =
