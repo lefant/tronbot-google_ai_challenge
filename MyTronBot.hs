@@ -7,19 +7,22 @@ import System.Random (StdGen, RandomGen, newStdGen, randomR)
 import System.Time (ClockTime, TimeDiff(..), getClockTime, diffClockTimes)
 
 import Control.Monad (replicateM, liftM)
+import Control.Monad.ST (ST, runST)
 
-import Data.List (unfoldr, maximumBy)
+import Data.List (foldl', unfoldr, maximumBy, transpose)
 
 import Data.Maybe (fromJust)
-import Data.Tree (Tree(..), Forest)
+import qualified Data.Either as E (lefts, rights)
+import Data.Tree (Tree(..), Forest, flatten)
 import Data.Ord (comparing)
 import Text.Printf (printf)
 
 -- import Data.Array.Diff
-import Data.Array.Unboxed
+import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
+import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
--- import Debug.Trace (trace)
--- import Data.List (sort)
+import Debug.Trace (trace)
+import Data.List (sort)
 
 type TronMap = UArray (Int, Int) Char
 -- type TronMap = DiffUArray (Int, Int) Char
@@ -28,10 +31,11 @@ type TronMap = UArray (Int, Int) Char
 
 -- constants
 exploratoryConstant :: Float
-exploratoryConstant = 1
+exploratoryConstant = 0.5
 
 uctTimePerMove :: TimeDiff
 uctTimePerMove = TimeDiff {
+                   -- tdPicosec = 900000000000
                    tdPicosec = 900000000000
                  , tdYear = 0
                  , tdMonth = 0
@@ -102,21 +106,83 @@ uctBot state =
           (do
             t <- uct state
             pv <- return $ principalVariation t
-            return $ moveFromPv pv)
-            -- return $ trace ("uctBot\n" ++ (alternateFirstMoves t)) moveFromPv pv)
+            -- return $ moveFromPv pv)
+            return $ (
+                      trace ("uctBot\n"
+                             ++ (showTronMap (debugUct t (getTronMap state)))
+                             ++ "\n"
+                             ++ (alternateFirstMoves t)
+                            )
+                      moveFromPv pv))
 
--- alternateFirstMoves :: (UctNode a) => Tree (UctLabel a) -> String
--- alternateFirstMoves t =
---     show $ map rootLabel $ reverse $ sort $ subForest t
+alternateFirstMoves :: (UctNode a) => Tree (UctLabel a) -> String
+alternateFirstMoves t =
+    show $ map rootLabel $ reverse $ sort $ subForest t
 
+debugUct :: Tree (UctLabel GameState) -> TronMap -> TronMap
+debugUct initTree initTronMap =
+    foldl' updateMap' t' $
+           map nodeState $ principalVariation initTree
+    where
+      t' =
+          foldl' updateMap initTronMap $
+                 map nodeState $ flatten initTree
+
+      updateMap :: TronMap -> GameState -> TronMap
+      updateMap t state =
+          t // [(pPos, pV), (ePos, eV)]
+          where
+            pPos = playerPos state
+            ePos = enemyPos state
+            pV = case t ! pPos of
+                   ' ' -> 'p'
+                   'p' -> 'P'
+                   'P' -> 'P'
+                   'e' -> 'W'
+                   'E' -> 'W'
+                   c -> c
+            eV = case t ! ePos of
+                   ' ' -> 'e'
+                   'e' -> 'E'
+                   'E' -> 'E'
+                   'p' -> 'W'
+                   'P' -> 'W'
+                   c -> c
+
+      updateMap' :: TronMap -> GameState -> TronMap
+      updateMap' t state =
+          t // if pPos == ePos
+               then [(pPos, 'M')]
+               else [(pPos, '1'), (ePos, '2')]
+          where
+            pPos = playerPos state
+            ePos = enemyPos state
+
+
+showTronMap :: TronMap -> String
+showTronMap t =
+    unlines $ transpose $ unfoldr maybeSplit es
+    where
+      es = elems t
+      h = fst $ last $ indices t
+      maybeSplit "" = Nothing
+      maybeSplit str = Just $ splitAt h str
 
 moveFromPv :: [UctLabel GameState] -> Move
 moveFromPv pv =
     snd $ last $ moveHistory $ nodeState $ head pv
 
 
-uct :: (UctNode a) => a -> IO (Tree (UctLabel a))
+-- uct :: (UctNode a) => a -> IO (Tree (UctLabel a))
+uct :: GameState -> IO (Tree (UctLabel GameState))
 uct initState =
+    -- trace ("uctBot\n"
+    --        -- ++ show ("heuristic",(heuristic initState)) ++ "\n"
+    --        -- ++ show ("floo",
+    --        --          (floodFill
+    --        --           (getTronMap initState)
+    --        --           (playerPos initState))) ++ "\n"
+    --       )
     getClockTime >>= uctZipper (fromTree $ makeNodeWithChildren initState)
 
 uctZipper :: (UctNode a) =>
@@ -145,6 +211,8 @@ uctZipper loc startTime = do
 data Spot = Wall | Blank | Player | Enemy deriving Eq
 data Move = North | East | South | West deriving (Eq, Show)
 
+allMoves :: [Move]
+allMoves = [North, East, South, West]
 
 instance Show Spot where
     show Wall = "#"
@@ -204,7 +272,44 @@ instance UctNode GameState where
                 ls -> ls
           tronMap = getTronMap state
 
+    heuristic state =
+        -- (0.5, 1)
+        case floodFill tronMap pPos of
+          Left MetOther ->
+              (distToHeuristic dist size, 1000)
+          Right pArea ->
+              case floodFill tronMap ePos of
+                Left MetOther ->
+                    error "floodFill from enemy finds player when floodFill from player does not find enemy"
+                Right eArea ->
+                    (areasToHeuristic
+                     (fromIntegral pArea)
+                     (fromIntegral eArea),
+                     1000)
+        where
+          size = fromIntegral $
+                 -- maxX state + maxY state
+                 ((maxX state) - 2) ^ (2 :: Int)
+                 + ((maxY state) - 2) ^ (2 :: Int)
+          dist = fromIntegral $
+                 euclidianDistance pPos ePos
+                 -- (manhattanDistance pPos ePos) ^ (2 :: Int)
+          tronMap = getTronMap state
+          pPos = playerPos state
+          ePos = enemyPos state
 
+distToHeuristic :: Float -> Float -> Float
+distToHeuristic d s =
+    -- trace ("distToHeuristic " ++ show (d, s, h))
+    h
+    where
+      h =
+          0.5 - (d / s) ^ (2 :: Int) / 3
+          -- 1.0 - d ^ (2 :: Int) / s ^ (2 :: Int) / 2
+
+areasToHeuristic :: Float -> Float -> Float
+areasToHeuristic pA eA =
+    pA / (pA + eA)
 
 runOneRandom :: GameState -> StdGen -> Float
 runOneRandom initState initGen =
@@ -357,6 +462,67 @@ finalResult' state who =
                     error "finalResult' called when neither player crashed"
 
 
+manhattanDistance :: (Int, Int) -> (Int, Int) -> Int
+manhattanDistance (x1, y1) (x2, y2) =
+    max (abs (x1 - x2)) (abs (y1 - y2))
+    -- abs (x1 - x2) + abs (y1 - y2)
+
+euclidianDistance :: (Int, Int) -> (Int, Int) -> Int
+euclidianDistance (x1, y1) (x2, y2) =
+    (abs (x1 - x2))^(2 :: Int) + (abs (y1 - y2))^(2 :: Int)
+
+
+data MetOther = MetOther deriving (Eq, Show)
+
+floodFill :: TronMap -> (Int, Int) -> Either MetOther Int
+floodFill initTronMap initP =
+    runST $ (do a <- thaw initTronMap
+                writeArray a initP ' '
+                floodFill' a initP)
+
+floodFill' :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s (Either MetOther Int)
+floodFill' a p@(x, y) = do
+  v <- readArray a p
+  (case v of
+     'X' -> return $ Right 0
+     '#' -> return $ Right 0
+     '2' -> return $ Left MetOther
+     '1' -> return $ Left MetOther
+     ' ' ->
+         (do
+           writeArray a p 'X'
+           n <- floodFill' a (x, y-1)
+           s <- floodFill' a (x, y+1)
+           e <- floodFill' a (x+1, y)
+           w <- floodFill' a (x-1, y)
+           (if null $ E.lefts [n,s,e,w]
+            then return $ Right (1 + (sum $ E.rights [n,s,e,w]))
+            else return $ Left MetOther))
+     other -> error ("floodFill' encountered " ++ show other))
+
+--     floodFill' initTronMap initP
+--     where
+--       floodFill' :: TronMap -> (Int, Int) -> Maybe Int
+--       floodFill' tronMap p
+--           | tronMap ! p == '2' = Nothing
+--           | tronMap ! p == ' ' =
+--               foldl' f (tronMap', Just 0) allMoves
+--               where
+--                 f :: (Maybe Int) -> Move -> (Maybe Int)
+--                 f n move =
+--                     (floodFill' tronMap' (updatePos p move))
+--                 tronMap' = tronMap // (p, 'X')
+--           | otherwise = Just 0
+
+ --    Flood-fill (node, target-color, replacement-color):
+ -- 1. If the color of node is not equal to target-color, return.
+ -- 2. Set the color of node to replacement-color.
+ -- 3. Perform Flood-fill (one step to the west of node, target-color, replacement-color).
+ --    Perform Flood-fill (one step to the east of node, target-color, replacement-color).
+ --    Perform Flood-fill (one step to the north of node, target-color, replacement-color).
+ --    Perform Flood-fill (one step to the south of node, target-color, replacement-color).
+ -- 4. Return
+
 
 
 
@@ -371,7 +537,7 @@ possibleMoves tronMap position =
     moves
     where
       moves =
-          filter possibleMove [North, East, South, West]
+          filter possibleMove allMoves
       possibleMove move =
           (tronMap ! updatePos position move) /= showSpot Wall
 
@@ -441,8 +607,10 @@ makeMove West = "4"
 class (Show a) => UctNode a where
     isTerminalNode :: a -> Bool
     finalResult :: a -> Float
+    heuristic :: a -> (Float, Int)
     randomEvalOnce :: (RandomGen g) => a -> g -> Float
     children :: a -> [a]
+
 
 instance (UctNode a) => Show (UctLabel a) where
     show label =
@@ -478,14 +646,24 @@ instance Ord (Tree (UctLabel b)) where
           f = winningProb . rootLabel
           g = visits . rootLabel
 
-defaultUctLabel :: UctLabel a
-defaultUctLabel = UctLabel {
-                    nodeState = undefined
-                  , winningProb = 0.5
-                  -- , uctValue = 0.5
-                  , visits = 1
-                  , isDone = False
-                  }
+newUctLabel :: (UctNode a) => a -> UctLabel a
+newUctLabel state = UctLabel {
+                      nodeState = state
+                    , winningProb = initProb
+                    , visits = heuristicWeight
+                    , isDone = False
+                    }
+    where
+      (initProb, heuristicWeight) = heuristic state
+
+-- defaultUctLabel :: UctLabel a
+-- defaultUctLabel = UctLabel {
+--                     nodeState = undefined
+--                   , winningProb = 0.5
+--                   -- , uctValue = 0.5
+--                   , visits = 1
+--                   , isDone = False
+--                   }
 
 
 
@@ -572,7 +750,7 @@ uctZipperUp loc result done =
 
 makeNodeWithChildren :: (UctNode a) => a -> Tree (UctLabel a)
 makeNodeWithChildren state =
-    Node { rootLabel = defaultUctLabel { nodeState = state }
+    Node { rootLabel = newUctLabel state
          , subForest = makeSubForest state
          }
 
@@ -582,8 +760,8 @@ makeSubForest =
 
 makeLeafNode :: (UctNode a) => a -> Tree (UctLabel a)
 makeLeafNode state =
-    Node { rootLabel = defaultUctLabel { nodeState = state },
-           subForest = [] }
+    Node { rootLabel = newUctLabel state
+         , subForest = [] }
 
 
 
@@ -613,15 +791,26 @@ uctValue :: (UctNode a) => Int -> (UctLabel a) -> Float
 uctValue parentVisits node =
     -- trace ("uctValue: "
     --        ++ show node
-    --        ++ show (parentVisits, winningProb node, value))
+    --        ++ show (
+    --                 ("winningProb node",(winningProb node)),
+    --                 ("b", b),
+    --                 ("sqrt", sqrt (log (fromIntegral parentVisits) / fromIntegral (visits node))),
+    --                 ("log", (log (fromIntegral parentVisits)),
+    --                 ("parentVisits",parentVisits),
+    --                 ("parentVisits",parentVisits),
+    --                 ("visits node",(visits node)),
+
+    --                 value)))
     value
     where
       value =
           winningProb node
-          + (exploratoryConstant
-             * sqrt
-             (log (fromIntegral parentVisits)
-              / fromIntegral (visits node)))
+          + b
+      b =
+          (exploratoryConstant
+           * sqrt
+           ((log (fromIntegral parentVisits))
+            / fromIntegral (visits node)))
 
 
 
