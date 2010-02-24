@@ -1,4 +1,4 @@
-{-# OPTIONS -O2 -Wall -Werror -Wwarn #-}
+
 {-# LANGUAGE FlexibleInstances #-}
 
 import System.IO (hSetBuffering, stdin, stdout, BufferMode(..))
@@ -11,7 +11,6 @@ import Control.Monad.ST (ST, runST)
 import Data.List (foldl', unfoldr, maximumBy, transpose)
 
 import Data.Maybe (fromJust)
-import qualified Data.Either as E (lefts, rights)
 import Data.Tree (Tree(..), Forest, flatten)
 import Data.Ord (comparing)
 import Text.Printf (printf)
@@ -593,12 +592,16 @@ floodFill' a p@(x, y) = do
            s <- floodFill' a (x, y+1)
            e <- floodFill' a (x+1, y)
            w <- floodFill' a (x-1, y)
-           (if null $ E.lefts [n,s,e,w]
-            then return $ Right (1 + (sum $ E.rights [n,s,e,w]))
+           (if null $ eitherLefts [n,s,e,w]
+            then return $ Right (1 + (sum $ eitherRights [n,s,e,w]))
             else return $ Left MetOther))
      other -> error ("floodFill' encountered " ++ show other))
 
+eitherLefts   :: [Either a b] -> [a]
+eitherLefts x = [a | Left a <- x]
 
+eitherRights   :: [Either a b] -> [b]
+eitherRights x = [a | Right a <- x]
 
 
 initPos :: TronMap -> Spot -> (Int, Int)
