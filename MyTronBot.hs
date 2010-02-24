@@ -1,4 +1,4 @@
-
+{-# OPTIONS -O2 -Wall -Werror -Wwarn #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 import System.IO (hSetBuffering, stdin, stdout, BufferMode(..))
@@ -262,18 +262,18 @@ instance UctNode GameState where
         finalResult' state $ lastToMove state
 
     randomEvalOnce state rGen =
-        -- runOneRandom state rGen
-        if divided state
-        then runOneRandom state rGen
-        else
-            case floodFill tronMap pPos of
-              Left MetOther ->
-                  runOneRandom state rGen
-              Right _n ->
-                  areaHeuristic state
-        where
-          tronMap = getTronMap state
-          pPos = playerPos state
+        runOneRandom state rGen
+        -- if divided state
+        -- then runOneRandom state rGen
+        -- else
+        --     case floodFill tronMap pPos of
+        --       Left MetOther ->
+        --           runOneRandom state rGen
+        --       Right _n ->
+        --           areaHeuristic state
+        -- where
+        --   tronMap = getTronMap state
+        --   pPos = playerPos state
 
     children state =
         -- trace ("children " ++
@@ -309,25 +309,25 @@ instance UctNode GameState where
         --              1000)
 
 
-areaHeuristic :: GameState -> Float
-areaHeuristic state =
-    case floodFill tronMap (playerPos state) of
-      Left MetOther ->
-          error "randomEvalOnce player MetOther when divided"
-      Right pA ->
-          case floodFill tronMap (enemyPos state) of
-            Left MetOther ->
-                error "randomEvalOnce enemy MetOther when divided"
-            Right eA ->
-                if diff > 5
-                then 1.0
-                else if diff < -5
-                     then 0.0
-                     else 0.5 + (diff / 10)
-                where
-                  diff = fromIntegral $ pA - eA
-     where
-      tronMap = getTronMap state
+-- areaHeuristic :: GameState -> Float
+-- areaHeuristic state =
+--     case floodFill tronMap (playerPos state) of
+--       Left MetOther ->
+--           error "randomEvalOnce player MetOther when divided"
+--       Right pA ->
+--           case floodFill tronMap (enemyPos state) of
+--             Left MetOther ->
+--                 error "randomEvalOnce enemy MetOther when divided"
+--             Right eA ->
+--                 if diff > 5
+--                 then 1.0
+--                 else if diff < -5
+--                      then 0.0
+--                      else 0.5 + (diff / 10)
+--                 where
+--                   diff = fromIntegral $ pA - eA
+--      where
+--       tronMap = getTronMap state
 
 -- fillerHeuristic :: GameState -> Float
 -- fillerHeuristic state =
