@@ -8,7 +8,7 @@ import System.Time (ClockTime, TimeDiff(..), getClockTime, diffClockTimes)
 import Control.Monad (replicateM, liftM)
 import Control.Monad.ST (ST, runST)
 
-import Data.List (foldl', unfoldr, maximumBy, transpose)
+import Data.List (foldl', unfoldr, maximumBy, transpose, intersect)
 
 import Data.Maybe (fromJust)
 import Data.Tree (Tree(..), Forest, flatten)
@@ -19,7 +19,7 @@ import Text.Printf (printf)
 import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
 import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
--- import Debug.Trace (trace)
+import Debug.Trace (trace)
 import Data.List (sort)
 
 type TronMap = UArray (Int, Int) Char
@@ -65,29 +65,51 @@ playTurns bot = do
   -- str <- getContents >>= (return . concat . take h . lines)
   str <- liftM concat $ replicateM h getLine
   rGen <- newStdGen
-  gameState <- return $ newGameState w h str rGen
-  move <- bot gameState
+  tronMap <- return $ makeTronMap w h str
+  -- gameState <- return $ newGameState w h str rGen
+  -- move <- bot gameState
+  move <- runBot tronMap w h rGen
   putStrLn $ makeMove move
   playTurns bot
-    where 
-      newGameState w h str rGen =
+
+
+makeTronMap :: Int -> Int -> String -> TronMap
+makeTronMap w h str =
+    array
+    ((1, 1), (w, h))
+    $ zip [(x,y) | y <- [1 .. h], x <- [1 .. w]] str
+
+
+runBot :: TronMap -> Int -> Int -> StdGen -> IO Move
+runBot tronMap w h rGen =
+    case floodFill tronMap pPos of
+      Left MetOther ->
+          uctBot
           GameState { getTronMap = tronMap
                     , ourRandomGen = rGen
                     , moveHistory = []
                     , playerCrashed = False
                     , enemyCrashed = False
-                    , playerPos = initPos tronMap Player
+                    , playerPos = pPos
                     , enemyPos = initPos tronMap Enemy
                     , maxX = w
                     , maxY = h
                     , toMove = Player
                     , divided = False
                     }
-          where
-            tronMap =
-                array
-                ((1, 1), (w, h))
-                $ zip [(x,y) | y <- [1 .. h], x <- [1 .. w]] str
+      Right pA ->
+          uctBotEnd
+          EndGameState { getTronMapEnd = tronMap
+                       , moveHistoryEnd = []
+                       , ourRandomGenEnd = rGen
+                       , playerCrashedEnd = False
+                       , playerPosEnd = pPos
+                       , maxXEnd = w
+                       , maxYEnd = h
+                       , maxArea = pA
+    }
+    where
+      pPos = initPos tronMap Player
 
 
 uctBot :: GameState -> IO Move
@@ -101,24 +123,44 @@ uctBot state =
                 return onlyMove
       _otherwise ->
           (do
-            t <- uct state'
+            t <- uct state
             pv <- return $ principalVariation t
             -- return $ moveFromPv pv)
             return $ (
-                      -- trace ("uctBot\n"
-                      --        ++ (showTronMap (debugUct t (getTronMap state)))
-                      --        ++ "\n"
-                      --        ++ (alternateFirstMoves t)
-                      --       )
+                      trace ("uctBot\n"
+                             ++ (showTronMap (debugUct t (getTronMap state)))
+                             ++ "\n"
+                             ++ (alternateFirstMoves t)
+                            )
                       moveFromPv pv))
       where
         tronMap = getTronMap state
         pPos = playerPos state
-        state' = state { divided = divided' }
-        divided' =
-            case floodFill tronMap pPos of
-              Left MetOther -> False
-              Right _n -> True
+
+uctBotEnd :: EndGameState -> IO Move
+uctBotEnd state =
+    case possibleMoves tronMap pPos of
+      [] ->
+          -- trace "uctBot no possible moves, go North"
+                return North
+      [onlyMove] ->
+          -- trace ("uctBot only one move: " ++ show onlyMove)
+                return onlyMove
+      _otherwise ->
+          (do
+            t <- uct state
+            pv <- return $ principalVariation t
+            -- return $ moveFromPv pv)
+            return $ (
+                      trace ("uctBot\n"
+                             -- ++ (showTronMap (debugUct t (getTronMapEnd state)))
+                             -- ++ "\n"
+                             ++ (alternateFirstMoves t)
+                            )
+                      moveFromPvEnd pv))
+      where
+        tronMap = getTronMapEnd state
+        pPos = playerPosEnd state
 
 
 alternateFirstMoves :: (UctNode a) => Tree (UctLabel a) -> String
@@ -178,9 +220,13 @@ moveFromPv :: [UctLabel GameState] -> Move
 moveFromPv pv =
     snd $ last $ moveHistory $ nodeState $ head pv
 
+moveFromPvEnd :: [UctLabel EndGameState] -> Move
+moveFromPvEnd pv =
+    last $ moveHistoryEnd $ nodeState $ head pv
+
 
 -- uct :: (UctNode a) => a -> IO (Tree (UctLabel a))
-uct :: GameState -> IO (Tree (UctLabel GameState))
+uct :: (UctNode a) => a -> IO (Tree (UctLabel a))
 uct initState =
     -- trace ("uctBot\n"
     --        -- ++ show ("heuristic",(heuristic initState)) ++ "\n"
@@ -240,6 +286,18 @@ data GameState = GameState {
      ,divided       :: Bool
     }
 
+data EndGameState = EndGameState {
+      getTronMapEnd      :: TronMap
+    , moveHistoryEnd     :: [Move]
+    , ourRandomGenEnd    :: StdGen
+    , playerCrashedEnd   :: Bool
+    , playerPosEnd       :: (Int,Int)
+    , maxXEnd            :: Int
+    , maxYEnd            :: Int
+    , maxArea            :: Int
+    }
+
+
 instance Show GameState where
     show state =
         case moveHistory state of
@@ -289,11 +347,13 @@ instance UctNode GameState where
           tronMap = getTronMap state
 
     heuristic state =
-        if divided state
-        then (0.5, 1)
-            -- (areaHeuristic state, 10000)
-            -- (fillerHeuristic state, 100)
-        else (distanceHeuristic state, 1000)
+        (distanceHeuristic state, 1000)
+        -- if divided state
+        -- then (0.5, 1)
+        --     -- (areaHeuristic state, 10000)
+        --     -- (fillerHeuristic state, 100)
+        -- else
+
         -- -- (0.5, 1)
         -- case floodFill tronMap pPos of
         --   Left MetOther ->
@@ -307,6 +367,59 @@ instance UctNode GameState where
         --              (fromIntegral pArea)
         --              (fromIntegral eArea),
         --              1000)
+
+
+instance Show EndGameState where
+    show state =
+        case moveHistoryEnd state of
+          [] -> ""
+          moves ->
+              show $ reverse moves
+
+instance UctNode EndGameState where
+    isTerminalNode state =
+        playerCrashedEnd state
+
+    finalResult state =
+        finalResultEnd' state
+
+    randomEvalOnce state rGen =
+        runOneRandomEnd state rGen
+        -- if divided state
+        -- then runOneRandom state rGen
+        -- else
+        --     case floodFill tronMap pPos of
+        --       Left MetOther ->
+        --           runOneRandom state rGen
+        --       Right _n ->
+        --           areaHeuristic state
+        -- where
+        --   tronMap = getTronMap state
+        --   pPos = playerPos state
+
+    children state =
+        -- trace ("children " ++
+        --        (show (state, moves)))
+        map (updateEndGameState state) moves
+        where
+          moves =
+              case possibleMoves
+                   tronMap
+                   (playerPosEnd state) of
+                [] -> [North]
+                ls -> ls
+          tronMap = getTronMapEnd state
+
+    heuristic state =
+        case floodFill
+                 (getTronMapEnd state)
+                 (playerPosEnd state) of
+          Left MetOther ->
+              error "randomEvalOnce player MetOther in endgame"
+          Right pA ->
+              ((runOneRandomEnd state rGen / fromIntegral pA), 1)
+        where
+          rGen = ourRandomGenEnd state
 
 
 -- areaHeuristic :: GameState -> Float
@@ -409,49 +522,69 @@ genMoveRand state rGen =
       tronMap = getTronMap state
 
 
--- runOneRandomBiased :: GameState -> StdGen -> Float
--- runOneRandomBiased initState initGen =
---     -- trace ("runOneRandom " ++ showMap (getTronMap initState))
---     run initState initGen 0
---     where
---       run :: GameState -> StdGen -> Int -> Float
---       run _ _ 10000 = 1.0
---       run state rGen runCount =
---           if isTerminalNode state'
---           then
---               -- trace ("runOneRandomBiased " ++ show runCount ++ "\n")
---                      -- ++ (showTronMap (getTronMap state')))
---               (finalResult' state' who)
---           else
---               run state' rGen' (runCount + 1)
---           where
---             state' = updateGameState state move
---             (move, rGen') = genMoveRandBiased state rGen
---       who = lastToMove initState
+runOneRandomEnd :: EndGameState -> StdGen -> Float
+runOneRandomEnd initState initGen =
+    -- trace ("runOneRandom " ++ showMap (getTronMap initState))
+    run initState initGen 0
+    where
+      run :: EndGameState -> StdGen -> Int -> Float
+      run _ _ 10000 = 1.0
+      run state rGen runCount =
+          if isTerminalNode state'
+          then
+              -- trace ("runOneRandomBiased " ++ show runCount ++ "\n"
+              --         ++ (showTronMap (getTronMapEnd state')) ++ "\n"
+              --         ++ (show (moveHistoryEnd state')))
+              finalResultEnd' state'
+          else
+              run state' rGen' (runCount + 1)
+          where
+            state' = updateEndGameState state move
+            (move, rGen') =
+                genMoveRandEnd state rGen allMovesOrdered
+      (allMovesOrdered, _) = 
+          pick [ [North, South, East, West]
+               , [South, North, East, West]
+               , [North, South, West, East]
+               , [South, North, West, East]
+               , [East, West, North, South]
+               , [West, East, North, South]
+               , [East, West, South, North]
+               , [West, East, South, North]
+               ] initGen
 
--- genMoveRandBiased :: GameState -> StdGen -> (Move, StdGen)
--- genMoveRandBiased state rGen =
---     -- trace ("\n\ngenMoveRand" ++
---     --        showMap tronMap ++
---     --        show (who, move, moveList))
---     (move, rGen')
---     where
---       (move, rGen') =
---           case moveList of
---             [] -> (North, rGen)
---             [singleMove] -> (singleMove, rGen)
---             moves ->
---                 pick moves' rGen
---                 where
---                   moves' =
---                       concatMap rIfTwo moves
---                   rIfTwo m =
---                       if 2 == (length $ possibleMoves tronMap (updatePos mPos m))
---                       then replicate 3 m
---                       else [m]
---       moveList = possibleMoves tronMap mPos
---       mPos = moverPos state
---       tronMap = getTronMap state
+genMoveRandEnd :: EndGameState -> StdGen -> [Move]
+                  -> (Move, StdGen)
+genMoveRandEnd state rGen allMovesOrdered =
+    -- trace ("\n\ngenMoveRand" ++
+    --        showMap tronMap ++
+    --        show (who, move, moveList))
+    (move, rGen')
+    where
+      (move, rGen') =
+          case moveList of
+            [] -> (North, rGen)
+            [singleMove] -> (singleMove, rGen)
+            moves ->
+                -- (head moves, rGen)
+                case filter (not . (oneWayMove tronMap pPos)) moves of
+                  [] ->
+                      pick moves rGen
+                  [singleMove] ->
+                      (singleMove, rGen)
+                  moves' ->
+                      (head moves', rGen)
+                -- pick moves' rGen
+                -- where
+                --   moves' =
+                --       concatMap rIfTwo moves
+                --   rIfTwo m =
+                --       if 2 == (length $ possibleMoves tronMap (updatePos mPos m))
+                --       then replicate 3 m
+                --       else [m]
+      moveList = allMovesOrdered `intersect` possibleMoves tronMap pPos
+      pPos = playerPosEnd state
+      tronMap = getTronMapEnd state
 
 
 pick :: (Show a) => [a] -> StdGen -> (a, StdGen)
@@ -541,6 +674,47 @@ updateGameState state move =
       who = toMove state
 
 
+updateEndGameState :: EndGameState -> Move -> EndGameState
+updateEndGameState state move =
+    -- trace ("\n\n" ++
+    --        "updateGameState\n" ++
+    --        show (moveHistory state) ++
+    --        "\n" ++
+    --        showMap tronMap ++
+    --        show ("crashed",(playerCrashed state, enemyCrashed state)) ++
+    --        "\n" ++
+    --        show ("toMove ",toMove state) ++
+    --        "\n" ++
+    --        show (who, move) ++
+    --        "\n" ++
+    --        showMap tronMap' ++
+    --        show ("crashed'", (playerCrashed', enemyCrashed')) ++
+    --        "\n" ++
+    --        show ("toMove ",toMove state') ++
+    --        "\n")
+    state'
+    where
+      state' =
+          state { getTronMapEnd = tronMap'
+                , moveHistoryEnd = moveHistory'
+                , playerCrashedEnd = playerCrashed'
+                , playerPosEnd = playerPos'
+                }
+
+      playerCrashed' = crashed tronMap playerPos'
+
+      playerPos' = updatePos (playerPosEnd state) move
+
+      tronMap' = tronMap // updates
+      updates = [(playerPosEnd state, (showSpot Wall)),
+                 (playerPos', (showSpot Player))]
+
+      moveHistory' = moveHistoryEnd state ++ [move]
+      tronMap = getTronMapEnd state
+
+
+
+
 finalResult' :: GameState -> Spot -> Float
 finalResult' state who =
         -- trace ("finalResult2 "
@@ -566,6 +740,10 @@ finalResult' state who =
                 (False, False) ->
                     error "finalResult' called when neither player crashed"
 
+finalResultEnd' :: EndGameState -> Float
+finalResultEnd' state =
+    (fromIntegral $ length $ moveHistoryEnd state)
+    / (fromIntegral $ maxArea state)
 
 
 
@@ -618,6 +796,19 @@ possibleMoves tronMap position =
           filter possibleMove allMoves
       possibleMove move =
           (tronMap ! updatePos position move) /= showSpot Wall
+
+oneWayMove :: TronMap -> (Int, Int) -> Move -> Bool
+oneWayMove tronMap p m =
+    case possibleMoves tronMap p' of
+      [] -> True
+      [m'] ->
+          case possibleMoves tronMap (updatePos p' m') of
+            [] -> True
+            [m''] -> trace ("oneWayMove " ++ show m'') True
+            _otherwise -> False
+      _otherwise -> False
+    where
+      p' = updatePos p m
 
 updatePos :: (Int, Int) -> Move -> (Int, Int)
 updatePos (x, y) North = (x, y-1)
