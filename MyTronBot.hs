@@ -349,10 +349,15 @@ instance UctNode GameState where
               playerCrashed state || enemyCrashed state
 
     finalResult state =
-        finalResult' state $ lastToMove state
+        finalResult'
+        (playerCrashed state)
+        (enemyCrashed state)
+        (lastToMove state)
 
     randomEvalOnce state rGen =
-        runOneRandom state rGen
+        -- runOneRandom state rGen
+        runOneRandomST state rGen
+
         -- if divided state
         -- then runOneRandom state rGen
         -- else
@@ -524,6 +529,82 @@ euclidianDistance (x1, y1) (x2, y2) =
     (abs (x1 - x2))^(2 :: Int) + (abs (y1 - y2))^(2 :: Int)
 
 
+-- floodFill' :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s (Either MetOther Int)
+-- floodFill' a p@(x, y) = do
+--   v <- readArray a p
+--   (case v of
+--      'X' -> return $ Right 0
+--      '#' -> return $ Right 0
+--      '2' -> return $ Left MetOther
+--      '1' -> return $ Left MetOther
+--      ' ' ->
+--          (do
+--            writeArray a p 'X'
+--            n <- floodFill' a (x, y-1)
+--            s <- floodFill' a (x, y+1)
+--            e <- floodFill' a (x+1, y)
+--            w <- floodFill' a (x-1, y)
+--            (if null $ eitherLefts [n,s,e,w]
+--             then return $ Right (1 + (sum $ eitherRights [n,s,e,w]))
+--             else return $ Left MetOther))
+--      other -> error ("floodFill' encountered " ++ show other))
+
+
+-- floodFill :: TronMap -> (Int, Int) -> Either MetOther Int
+-- floodFill initTronMap initP =
+--     runST $ (do a <- thaw initTronMap
+--                 writeArray a initP ' '
+--                 floodFill' a initP)
+
+
+runOneRandomST :: GameState -> StdGen -> Float
+runOneRandomST initState initGen =
+    -- trace ("runOneRandom " ++ showMap (getTronMap initState))
+    run initTronMap initGen 0 initPPos initEPos initMHistory
+    where
+      run :: TronMap -> StdGen -> Int
+          -> (Int, Int) -> (Int, Int) -> [(Spot, Move)]
+          -> Float
+      run _ _ 1000 _ _ _ =
+          -- trace "run returning after 1000 iterations"
+          0.5
+      run tronMap rGen runCount pPos ePos mHistory =
+          if pCrashed || eCrashed
+          then
+              finalResult'
+              pCrashed
+              eCrashed
+              initWho
+          else
+              run tronMap' rGen'' (runCount + 1) pPos' ePos' mHistory'
+          where
+            pCrashed = crashed tronMap pPos' || bothCrashed
+            eCrashed = crashed tronMap ePos' || bothCrashed
+            bothCrashed = pPos' == ePos'
+
+            tronMap' = tronMap // updates
+            updates =
+                [(pPos, (showSpot Wall)),
+                 (pPos',(showSpot Player)),
+                 (ePos, (showSpot Wall)),
+                 (ePos',(showSpot Enemy))]
+
+            pPos' = updatePos pPos move
+            ePos' = updatePos ePos move
+
+            mHistory' =
+                mHistory ++ [(Player, move), (Enemy, move')]
+
+            (move', rGen'') = genMoveRand moveList' rGen'
+            moveList' = possibleMoves tronMap ePos
+            (move, rGen') = genMoveRand moveList rGen
+            moveList = possibleMoves tronMap pPos
+
+      initWho = lastToMove initState
+      initTronMap = getTronMap initState
+      initPPos = playerPos initState
+      initEPos = enemyPos initState
+      initMHistory = moveHistory initState
 
 runOneRandom :: GameState -> StdGen -> Float
 runOneRandom initState initGen =
@@ -537,18 +618,23 @@ runOneRandom initState initGen =
       run state rGen runCount =
           if isTerminalNode state'
           then
-              -- trace ("run is terminal")
-              finalResult' state' who
+              finalResult'
+              (playerCrashed state')
+              (enemyCrashed state')
+              who
           else
               run state' rGen' (runCount + 1)
           where
             state' = updateGameState state move
-            (move, rGen') = genMoveRand state rGen
+            (move, rGen') = genMoveRand moveList rGen
+            moveList = possibleMoves tronMap (moverPos state)
+            tronMap = getTronMap state
 
       who = lastToMove initState
 
-genMoveRand :: GameState -> StdGen -> (Move, StdGen)
-genMoveRand state rGen =
+
+genMoveRand :: [Move] -> StdGen -> (Move, StdGen)
+genMoveRand moveList rGen =
     -- trace ("\n\ngenMoveRand" ++
     --        showMap tronMap ++
     --        show (who, move, moveList))
@@ -559,8 +645,6 @@ genMoveRand state rGen =
             [] -> (North, rGen)
             [singleMove] -> (singleMove, rGen)
             moves -> pick moves rGen
-      moveList = possibleMoves tronMap (moverPos state)
-      tronMap = getTronMap state
 
 
 runOneRandomEnd :: EndGameState -> StdGen -> Float
@@ -634,6 +718,10 @@ pick as rGen =
     (as !! i, rGen')
     where
       (i, rGen') = randomR (0, (length as - 1)) rGen
+
+
+
+
 
 
 updateGameState :: GameState -> Move -> GameState
@@ -715,6 +803,7 @@ updateGameState state move =
       who = toMove state
 
 
+
 updateEndGameState :: EndGameState -> Move -> EndGameState
 updateEndGameState state move =
     -- trace ("\n\n" ++
@@ -756,8 +845,8 @@ updateEndGameState state move =
 
 
 
-finalResult' :: GameState -> Spot -> Float
-finalResult' state who =
+finalResult' :: Bool -> Bool -> Spot -> Float
+finalResult' pCrashed eCrashed who =
         -- trace ("finalResult2 "
         --        ++ show (((playerCrashed state), (enemyCrashed state)),who,result)
         --        ++ showMap (getTronMap state)
@@ -766,7 +855,7 @@ finalResult' state who =
         result
         where
           result =
-              case ((playerCrashed state), (enemyCrashed state)) of
+              case (pCrashed, eCrashed) of
                 (True, True) -> 0.5
                 (True, False) ->
                     case who of
