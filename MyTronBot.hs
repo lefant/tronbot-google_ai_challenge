@@ -27,10 +27,6 @@ type TronMap = UArray (Int, Int) Char
 
 
 
--- constants
-exploratoryConstant :: Float
-exploratoryConstant = 0.2
-
 uctTimePerMove :: TimeDiff
 uctTimePerMove = TimeDiff {
                    -- tdPicosec = 900000000000
@@ -152,9 +148,9 @@ uctBotEnd state =
             pv <- return $ principalVariation t
             -- return $ moveFromPv pv)
             return $ (
-                      trace ("uctBot\n"
-                             -- ++ (showTronMap (debugUct t (getTronMapEnd state)))
-                             -- ++ "\n"
+                      trace ("uctBotEnd\n"
+                             ++ (showTronMap (debugUctEnd t (getTronMapEnd state)))
+                             ++ "\n"
                              ++ (alternateFirstMoves t)
                             )
                       moveFromPvEnd pv))
@@ -205,6 +201,35 @@ debugUct initTree initTronMap =
           where
             pPos = playerPos state
             ePos = enemyPos state
+
+debugUctEnd :: Tree (UctLabel EndGameState) -> TronMap -> TronMap
+debugUctEnd initTree initTronMap =
+    foldl' updateMap' t' $
+           map nodeState $ principalVariation initTree
+    where
+      t' =
+          foldl' updateMap initTronMap $
+                 map nodeState $ flatten initTree
+
+      updateMap :: TronMap -> EndGameState -> TronMap
+      updateMap t state =
+          t // [(pPos, pV)]
+          where
+            pPos = playerPosEnd state
+            pV = case t ! pPos of
+                   ' ' -> 'p'
+                   'p' -> 'P'
+                   'P' -> 'P'
+                   'e' -> 'W'
+                   'E' -> 'W'
+                   c -> c
+
+      updateMap' :: TronMap -> EndGameState -> TronMap
+      updateMap' t state =
+          t // [(pPos, '1')]
+          where
+            pPos = playerPosEnd state
+
 
 
 showTronMap :: TronMap -> String
@@ -306,6 +331,8 @@ instance Show GameState where
               show $ reverse moves
 
 instance UctNode GameState where
+    exploratoryConstant _state = 0.2
+
     isTerminalNode state =
         -- trace ("isTerminalNode " ++
         --        (show (state, ("complete",complete), ("crashes",anyCrashes), result)))
@@ -368,6 +395,9 @@ instance UctNode GameState where
         --              (fromIntegral eArea),
         --              1000)
 
+    updateResult _state result =
+        1 - result
+
 
 instance Show EndGameState where
     show state =
@@ -377,6 +407,8 @@ instance Show EndGameState where
               show $ reverse moves
 
 instance UctNode EndGameState where
+    exploratoryConstant _state = 1.0
+
     isTerminalNode state =
         playerCrashedEnd state
 
@@ -417,10 +449,12 @@ instance UctNode EndGameState where
           Left MetOther ->
               error "randomEvalOnce player MetOther in endgame"
           Right pA ->
-              ((runOneRandomEnd state rGen / fromIntegral pA), 1)
+              (((runOneRandomEnd state rGen) + fromIntegral pA)
+                / (fromIntegral (maxArea state)) / 2, 1)
         where
           rGen = ourRandomGenEnd state
 
+    updateResult _state = id
 
 -- areaHeuristic :: GameState -> Float
 -- areaHeuristic state =
@@ -740,10 +774,19 @@ finalResult' state who =
                 (False, False) ->
                     error "finalResult' called when neither player crashed"
 
+
 finalResultEnd' :: EndGameState -> Float
 finalResultEnd' state =
-    (fromIntegral $ length $ moveHistoryEnd state)
-    / (fromIntegral $ maxArea state)
+    -- trace ("finalResultEnd'\n"
+    --        ++ show (result, moveCount, maxCount) ++ "\n"
+    --        ++ (showTronMap (getTronMapEnd state)) ++ "\n"
+    --       )
+    result
+    where
+      result = fromIntegral moveCount / fromIntegral maxCount
+      moveCount = length $ moveHistoryEnd state
+      maxCount = maxArea state
+
 
 
 
@@ -879,6 +922,8 @@ class (Show a) => UctNode a where
     heuristic :: a -> (Float, Int)
     randomEvalOnce :: a -> StdGen -> Float
     children :: a -> [a]
+    updateResult :: a -> Float -> Float
+    exploratoryConstant :: a -> Float
 
 
 instance (UctNode a) => Show (UctLabel a) where
@@ -976,7 +1021,8 @@ uctZipperUp loc result done =
                   --            ++ show ("parent", rootLabel parentNode)
                   --            ++ show ("label'", label')
                   --           )
-                  uctZipperUp parentLoc 0 True
+                  uctZipperUp
+                  parentLoc (updateResult state 1.0) True
               else
                   -- if all siblings are also done, then parent
                   -- is also done with 1 - (max of sibling scores)
@@ -998,7 +1044,7 @@ uctZipperUp loc result done =
           where
             parentNode = tree parentLoc
             maxResult = winningProb $ rootLabel $ maximum $ subForest parentNode
-            result'' = 1 - maxResult
+            result'' = updateResult state maxResult
     where
       loc' = setTree node' loc
       node' = node { rootLabel = label' }
@@ -1013,7 +1059,9 @@ uctZipperUp loc result done =
       label = rootLabel node
       node = tree loc
 
-      result' = 1 - result
+      state = nodeState label
+
+      result' = updateResult state result
 
 
 
@@ -1076,7 +1124,7 @@ uctValue parentVisits node =
           winningProb node
           + b
       b =
-          (exploratoryConstant
+          ((exploratoryConstant (nodeState node))
            * sqrt
            ((log (fromIntegral parentVisits))
             / fromIntegral (visits node)))
