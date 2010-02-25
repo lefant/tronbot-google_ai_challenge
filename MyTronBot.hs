@@ -9,6 +9,7 @@ import Control.Monad (replicateM, liftM)
 import Control.Monad.ST (ST, runST)
 
 import Data.List (foldl', unfoldr, maximumBy, transpose, intersect)
+import Data.List (sort)
 
 import Data.Maybe (fromJust)
 import Data.Tree (Tree(..), Forest, flatten)
@@ -20,7 +21,11 @@ import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
 import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
 import Debug.Trace (trace)
-import Data.List (sort)
+
+maybeTrace :: String -> b -> b
+maybeTrace = trace
+-- maybeTrace _ = id
+
 
 type TronMap = UArray (Int, Int) Char
 -- type TronMap = DiffUArray (Int, Int) Char
@@ -123,7 +128,7 @@ uctBot state =
             pv <- return $ principalVariation t
             -- return $ moveFromPv pv)
             return $ (
-                      trace ("uctBot\n"
+                      maybeTrace ("uctBot\n"
                              ++ (showTronMap (debugUct t (getTronMap state)))
                              ++ "\n"
                              ++ (alternateFirstMoves t)
@@ -148,7 +153,7 @@ uctBotEnd state =
             pv <- return $ principalVariation t
             -- return $ moveFromPv pv)
             return $ (
-                      trace ("uctBotEnd\n"
+                      maybeTrace ("uctBotEnd\n"
                              ++ (showTronMap (debugUctEnd t (getTronMapEnd state)))
                              ++ "\n"
                              ++ (alternateFirstMoves t)
@@ -449,8 +454,10 @@ instance UctNode EndGameState where
           Left MetOther ->
               error "randomEvalOnce player MetOther in endgame"
           Right pA ->
+              -- ((fromIntegral pA)
+              --   / (fromIntegral (maxArea state)), 1000)
               (((runOneRandomEnd state rGen) + fromIntegral pA)
-                / (fromIntegral (maxArea state)) / 2, 1)
+                / (fromIntegral (maxArea state)) / 2, 10)
         where
           rGen = ourRandomGenEnd state
 
@@ -847,7 +854,7 @@ oneWayMove tronMap p m =
       [m'] ->
           case possibleMoves tronMap (updatePos p' m') of
             [] -> True
-            [m''] -> trace ("oneWayMove " ++ show m'') True
+            [m''] -> maybeTrace ("oneWayMove " ++ show m'') True
             _otherwise -> False
       _otherwise -> False
     where
