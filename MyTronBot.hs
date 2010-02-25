@@ -5,7 +5,7 @@ import System.IO (hSetBuffering, stdin, stdout, BufferMode(..))
 import System.Random (StdGen, newStdGen, randomR)
 import System.Time (ClockTime, TimeDiff(..), getClockTime, diffClockTimes)
 
-import Control.Monad (replicateM, liftM)
+import Control.Monad (replicateM, liftM, filterM)
 import Control.Monad.ST (ST, runST)
 
 import Data.List (foldl', unfoldr, maximumBy, transpose, intersect)
@@ -423,10 +423,14 @@ instance UctNode EndGameState where
         playerCrashedEnd state
 
     finalResult state =
-        finalResultEnd' state
+        finalResultEnd' moveCount maxCount
+        where
+          moveCount = length $ moveHistoryEnd state
+          maxCount = maxArea state
+
 
     randomEvalOnce state rGen =
-        runOneRandomEnd state rGen
+        runOneRandomSTEnd state rGen
         -- if divided state
         -- then runOneRandom state rGen
         -- else
@@ -560,51 +564,131 @@ euclidianDistance (x1, y1) (x2, y2) =
 runOneRandomST :: GameState -> StdGen -> Float
 runOneRandomST initState initGen =
     -- trace ("runOneRandom " ++ showMap (getTronMap initState))
-    run initTronMap initGen 0 initPPos initEPos initMHistory
+    runST $ (do initArray <- thaw initTronMap
+                run initArray initGen 0 initPPos initEPos)
+
     where
-      run :: TronMap -> StdGen -> Int
-          -> (Int, Int) -> (Int, Int) -> [(Spot, Move)]
-          -> Float
-      run _ _ 1000 _ _ _ =
+      run :: (STUArray s (Int, Int) Char) -> StdGen -> Int
+          -> (Int, Int) -> (Int, Int)
+          -> ST s Float
+      run _ _ 1000 _ _ =
           -- trace "run returning after 1000 iterations"
-          0.5
-      run tronMap rGen runCount pPos ePos mHistory =
-          if pCrashed || eCrashed
+          return 0.5
+      run tronArray rGen runCount pPos ePos = do
+        moveList <- possibleMovesST tronArray pPos
+        (pMove, rGen') <- return $ genMoveRand moveList rGen
+        moveList' <- possibleMovesST tronArray ePos
+        (eMove, rGen'') <- return $ genMoveRand moveList' rGen'
+        pPos' <- return $ updatePos pPos pMove
+        ePos' <- return $ updatePos ePos eMove
+        pCrashed <- crashedST tronArray pPos'
+        eCrashed <- crashedST tronArray ePos'
+        bothCrashed <- return $ pPos' == ePos'
+        pCrashed' <- return $ pCrashed || bothCrashed
+        eCrashed' <- return $ eCrashed || bothCrashed
+        writeArray tronArray pPos (showSpot Wall)
+        writeArray tronArray pPos (showSpot Player)
+        writeArray tronArray ePos (showSpot Wall)
+        writeArray tronArray ePos (showSpot Enemy)
+        (if pCrashed' || eCrashed'
           then
-              finalResult'
-              pCrashed
-              eCrashed
-              initWho
+              return $ finalResult' pCrashed' eCrashed' initWho
           else
-              run tronMap' rGen'' (runCount + 1) pPos' ePos' mHistory'
-          where
-            pCrashed = crashed tronMap pPos' || bothCrashed
-            eCrashed = crashed tronMap ePos' || bothCrashed
-            bothCrashed = pPos' == ePos'
+              run tronArray rGen'' (runCount + 1) pPos' ePos')
 
-            tronMap' = tronMap // updates
-            updates =
-                [(pPos, (showSpot Wall)),
-                 (pPos',(showSpot Player)),
-                 (ePos, (showSpot Wall)),
-                 (ePos',(showSpot Enemy))]
-
-            pPos' = updatePos pPos move
-            ePos' = updatePos ePos move
-
-            mHistory' =
-                mHistory ++ [(Player, move), (Enemy, move')]
-
-            (move', rGen'') = genMoveRand moveList' rGen'
-            moveList' = possibleMoves tronMap ePos
-            (move, rGen') = genMoveRand moveList rGen
-            moveList = possibleMoves tronMap pPos
 
       initWho = lastToMove initState
       initTronMap = getTronMap initState
       initPPos = playerPos initState
       initEPos = enemyPos initState
-      initMHistory = moveHistory initState
+
+
+
+runOneRandomSTEnd :: EndGameState -> StdGen -> Float
+runOneRandomSTEnd initState initGen =
+    runST $ (do initArray <- thaw initTronMap
+                run initArray initGen 0 initPPos)
+    where
+      run :: (STUArray s (Int, Int) Char) -> StdGen -> Int
+          -> (Int, Int)
+          -> ST s Float
+      run _ _ 10000 _ =
+          return 1.0
+      run tronArray rGen runCount pPos = do
+        moveList <- possibleMovesST tronArray pPos
+        moveList' <- return $ allMovesOrdered `intersect` moveList
+        (pMove, rGen') <- (case moveList' of
+                            [] ->
+                                return (North, rGen)
+                            [singleMove] ->
+                                return (singleMove, rGen)
+                            moves -> (do
+                              moves' <- filterM (notOneWayMoveST tronArray pPos) moveList'
+                              case moves' of
+                                [] -> return $ pick moves rGen
+                                [singleMove] ->
+                                    return $ (singleMove, rGen)
+                                moves'' -> return $
+                                           (head moves'', rGen)
+                                     ))
+        pPos' <- return $ updatePos pPos pMove
+        pCrashed <- crashedST tronArray pPos'
+        writeArray tronArray pPos (showSpot Wall)
+        writeArray tronArray pPos (showSpot Player)
+        (if pCrashed
+          then
+              return $ finalResultEnd' runCount initMaxArea
+          else
+              run tronArray rGen' (runCount + 1) pPos')
+
+      (allMovesOrdered, _) =
+          pick [ [North, South, East, West]
+               , [South, North, East, West]
+               , [North, South, West, East]
+               , [South, North, West, East]
+               , [East, West, North, South]
+               , [West, East, North, South]
+               , [East, West, South, North]
+               , [West, East, South, North]
+               ] initGen
+
+      initTronMap = getTronMapEnd initState
+      initPPos = playerPosEnd initState
+      initMaxArea = maxArea initState
+
+
+
+possibleMovesST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s [Move]
+possibleMovesST tronArray position =
+    filterM (possibleMoveST tronArray position) allMoves
+
+possibleMoveST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> Move -> ST s Bool
+possibleMoveST tronArray position move = do
+        v <- readArray tronArray (updatePos position move)
+        return $ v /= showSpot Wall
+
+crashedST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s Bool
+crashedST tronArray pos = do
+  v <- readArray tronArray pos
+  return $ v /= showSpot Blank
+
+notOneWayMoveST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> Move -> ST s Bool
+notOneWayMoveST tronArray p m = do
+  p' <- return $ updatePos p m
+  pMoves <- possibleMovesST tronArray p'
+  case pMoves of
+    [] -> return False
+    [m'] ->
+        (do
+          p'' <- return $ updatePos p' m'
+          pMoves' <- possibleMovesST tronArray p''
+          case pMoves' of
+            [] -> return False
+            [_m''] -> return False
+            _otherwise -> return True)
+    _otherwise -> return True
+
+
 
 runOneRandom :: GameState -> StdGen -> Float
 runOneRandom initState initGen =
@@ -660,13 +744,20 @@ runOneRandomEnd initState initGen =
               -- trace ("runOneRandomBiased " ++ show runCount ++ "\n"
               --         ++ (showTronMap (getTronMapEnd state')) ++ "\n"
               --         ++ (show (moveHistoryEnd state')))
-              finalResultEnd' state'
+              finalResultEnd' runCount initMaxArea
           else
               run state' rGen' (runCount + 1)
           where
             state' = updateEndGameState state move
             (move, rGen') =
-                genMoveRandEnd state rGen allMovesOrdered
+                genMoveRandEnd moveList rGen pPos tronMap
+            moveList =
+                allMovesOrdered
+                `intersect`
+                possibleMoves tronMap pPos
+            tronMap = getTronMapEnd state
+            pPos = playerPosEnd state
+
       (allMovesOrdered, _) = 
           pick [ [North, South, East, West]
                , [South, North, East, West]
@@ -678,12 +769,12 @@ runOneRandomEnd initState initGen =
                , [West, East, South, North]
                ] initGen
 
-genMoveRandEnd :: EndGameState -> StdGen -> [Move]
+      initMaxArea = maxArea initState
+
+
+genMoveRandEnd :: [Move] -> StdGen -> (Int,Int) -> TronMap
                   -> (Move, StdGen)
-genMoveRandEnd state rGen allMovesOrdered =
-    -- trace ("\n\ngenMoveRand" ++
-    --        showMap tronMap ++
-    --        show (who, move, moveList))
+genMoveRandEnd moveList rGen pPos tronMap =
     (move, rGen')
     where
       (move, rGen') =
@@ -699,17 +790,6 @@ genMoveRandEnd state rGen allMovesOrdered =
                       (singleMove, rGen)
                   moves' ->
                       (head moves', rGen)
-                -- pick moves' rGen
-                -- where
-                --   moves' =
-                --       concatMap rIfTwo moves
-                --   rIfTwo m =
-                --       if 2 == (length $ possibleMoves tronMap (updatePos mPos m))
-                --       then replicate 3 m
-                --       else [m]
-      moveList = allMovesOrdered `intersect` possibleMoves tronMap pPos
-      pPos = playerPosEnd state
-      tronMap = getTronMapEnd state
 
 
 pick :: (Show a) => [a] -> StdGen -> (a, StdGen)
@@ -871,17 +951,9 @@ finalResult' pCrashed eCrashed who =
                     error "finalResult' called when neither player crashed"
 
 
-finalResultEnd' :: EndGameState -> Float
-finalResultEnd' state =
-    -- trace ("finalResultEnd'\n"
-    --        ++ show (result, moveCount, maxCount) ++ "\n"
-    --        ++ (showTronMap (getTronMapEnd state)) ++ "\n"
-    --       )
-    result
-    where
-      result = fromIntegral moveCount / fromIntegral maxCount
-      moveCount = length $ moveHistoryEnd state
-      maxCount = maxArea state
+finalResultEnd' :: Int -> Int -> Float
+finalResultEnd' moveCount maxCount =
+    fromIntegral moveCount / fromIntegral maxCount
 
 
 
@@ -956,11 +1028,9 @@ updatePos (x, y) East = (x+1, y)
 updatePos (x, y) West = (x-1, y)
 
 crashed :: TronMap -> (Int, Int) -> Bool
-crashed tronMap p =
-    -- trace ("crashed: " ++ show (p, result))
-    result
-    where
-      result = (tronMap ! p) /= showSpot Blank
+crashed tronMap p = (tronMap ! p) /= showSpot Blank
+
+
 
 -- showMap :: TronMap -> String
 -- showMap tronMap =
