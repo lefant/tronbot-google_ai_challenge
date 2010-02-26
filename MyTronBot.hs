@@ -1,4 +1,4 @@
-
+{-# OPTIONS -O2 -Wall -Werror -Wwarn #-}
 {-# LANGUAGE FlexibleInstances #-}
 
 import System.IO (hSetBuffering, stdin, stdout, BufferMode(..))
@@ -9,27 +9,28 @@ import Control.Monad (replicateM, liftM, filterM)
 import Control.Monad.ST (ST, runST)
 
 import Data.List (foldl', unfoldr, maximumBy, transpose, intersect)
-import Data.List (sort)
+import Data.List (sort, insert, deleteBy)
 
 import Data.Maybe (fromJust)
+import qualified Data.Map as M (Map, singleton, insert, member, lookup)
+import qualified Data.Set as S (Set, empty, insert, member)
 import Data.Tree (Tree(..), Forest, flatten)
 import Data.Ord (comparing)
 import Text.Printf (printf)
 
 -- import Data.Array.Diff
-import qualified Data.IntMap as M ()
 import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
 import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
--- import Debug.Trace (trace)
+import Debug.Trace (trace)
 
 maybeTrace :: String -> b -> b
--- maybeTrace = trace
-maybeTrace _ = id
+maybeTrace = trace
+-- maybeTrace _ = id
 
 
-type TronMap = UArray (Int, Int) Char
--- type TronMap = DiffUArray (Int, Int) Char
+type TronMap = UArray Coord Char
+-- type TronMap = DiffUArray Coord Char
 
 
 
@@ -294,6 +295,7 @@ uctZipper loc startTime = do
 
 data Spot = Wall | Blank | Player | Enemy deriving Eq
 data Move = North | East | South | West deriving (Eq, Show)
+type Coord = (Int, Int)
 
 allMoves :: [Move]
 allMoves = [North, East, South, West]
@@ -310,8 +312,8 @@ data GameState = GameState {
      ,ourRandomGen    :: StdGen
      ,playerCrashed   :: Bool
      ,enemyCrashed    :: Bool
-     ,playerPos       :: (Int,Int)
-     ,enemyPos        :: (Int,Int)
+     ,playerPos       :: Coord
+     ,enemyPos        :: Coord
      ,maxX            :: Int
      ,maxY            :: Int
      ,toMove          :: Spot
@@ -323,7 +325,7 @@ data EndGameState = EndGameState {
     , moveHistoryEnd     :: [Move]
     , ourRandomGenEnd    :: StdGen
     , playerCrashedEnd   :: Bool
-    , playerPosEnd       :: (Int,Int)
+    , playerPosEnd       :: Coord
     , maxXEnd            :: Int
     , maxYEnd            :: Int
     , maxAreaEnd         :: Int
@@ -517,7 +519,7 @@ distanceHeuristic state =
              ((maxX state) - 2) ^ (2 :: Int)
              + ((maxY state) - 2) ^ (2 :: Int)
       dist = fromIntegral $
-             euclidianDistance pPos ePos
+             pseudoEuclidianDistance pPos ePos
              -- (manhattanDistance pPos ePos) ^ (2 :: Int)
       pPos = playerPos state
       ePos = enemyPos state
@@ -533,14 +535,21 @@ distToHeuristic d s =
           else 0.8 - (d / s) ^ (3 :: Int) / 3
           -- 1.0 - d ^ (2 :: Int) / s ^ (2 :: Int) / 2
 
--- manhattanDistance :: (Int, Int) -> (Int, Int) -> Int
+-- manhattanDistance :: Coord -> Coord -> Int
 -- manhattanDistance (x1, y1) (x2, y2) =
 --     max (abs (x1 - x2)) (abs (y1 - y2))
 --     -- abs (x1 - x2) + abs (y1 - y2)
 
-euclidianDistance :: (Int, Int) -> (Int, Int) -> Int
-euclidianDistance (x1, y1) (x2, y2) =
+pseudoEuclidianDistance :: Coord -> Coord -> Int
+pseudoEuclidianDistance (x1, y1) (x2, y2) =
     (abs (x1 - x2))^(2 :: Int) + (abs (y1 - y2))^(2 :: Int)
+
+euclidianDistance :: Coord -> Coord -> Float
+euclidianDistance (x1, y1) (x2, y2) =
+    sqrt $
+         fromIntegral
+         ((abs (x1 - x2))^(2 :: Int)
+          + (abs (y1 - y2))^(2 :: Int))
 
 
 
@@ -551,8 +560,8 @@ runOneRandomST initState initGen =
                 run initArray initGen 0 initPPos initEPos)
 
     where
-      run :: (STUArray s (Int, Int) Char) -> StdGen -> Int
-          -> (Int, Int) -> (Int, Int)
+      run :: (STUArray s Coord Char) -> StdGen -> Int
+          -> Coord -> Coord
           -> ST s Float
       run _ _ 1000 _ _ =
           -- trace "run returning after 1000 iterations"
@@ -591,8 +600,8 @@ runOneRandomSTEnd initState initGen =
     runST $ (do initArray <- thaw initTronMap
                 run initArray initGen 0 initPPos)
     where
-      run :: (STUArray s (Int, Int) Char) -> StdGen -> Int
-          -> (Int, Int)
+      run :: (STUArray s Coord Char) -> StdGen -> Int
+          -> Coord
           -> ST s Float
       run _ _ 10000 _ =
           return 1.0
@@ -640,21 +649,21 @@ runOneRandomSTEnd initState initGen =
 
 
 
-possibleMovesST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s [Move]
+possibleMovesST :: (STUArray s Coord Char) -> Coord -> ST s [Move]
 possibleMovesST tronArray position =
     filterM (possibleMoveST tronArray position) allMoves
 
-possibleMoveST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> Move -> ST s Bool
+possibleMoveST :: (STUArray s Coord Char) -> Coord -> Move -> ST s Bool
 possibleMoveST tronArray position move = do
         v <- readArray tronArray (updatePos position move)
         return $ v /= showSpot Wall
 
-crashedST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s Bool
+crashedST :: (STUArray s Coord Char) -> Coord -> ST s Bool
 crashedST tronArray pos = do
   v <- readArray tronArray pos
   return $ v /= showSpot Blank
 
-notOneWayMoveST :: (STUArray s (Int, Int) Char) -> (Int, Int) -> Move -> ST s Bool
+notOneWayMoveST :: (STUArray s Coord Char) -> Coord -> Move -> ST s Bool
 notOneWayMoveST tronArray p m = do
   p' <- return $ updatePos p m
   pMoves <- possibleMovesST tronArray p'
@@ -754,7 +763,7 @@ genMoveRand moveList rGen =
 --       initMaxArea = maxAreaEnd initState
 
 
--- genMoveRandEnd :: [Move] -> StdGen -> (Int,Int) -> TronMap
+-- genMoveRandEnd :: [Move] -> StdGen -> Coord -> TronMap
 --                   -> (Move, StdGen)
 -- genMoveRandEnd moveList rGen pPos tronMap =
 --     (move, rGen')
@@ -942,13 +951,13 @@ finalResultEnd' moveCount maxCount =
 
 data MetOther = MetOther deriving (Eq, Show)
 
-floodFill :: TronMap -> (Int, Int) -> (Bool, Int)
+floodFill :: TronMap -> Coord -> (Bool, Int)
 floodFill initTronMap initP =
     runST $ (do a <- thaw initTronMap
                 writeArray a initP ' '
                 floodFill' a initP)
 
-floodFill' :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s (Bool, Int)
+floodFill' :: (STUArray s Coord Char) -> Coord -> ST s (Bool, Int)
 floodFill' a p@(x, y) = do
   v <- readArray a p
   (case v of
@@ -966,23 +975,98 @@ floodFill' a p@(x, y) = do
            return (or $ map fst [n,s,e,w], sum $ map snd [n,s,e,w]))
      other -> error ("floodFill' encountered " ++ show other))
 
-eitherLefts   :: [Either a b] -> [a]
-eitherLefts x = [a | Left a <- x]
+-- eitherLefts   :: [Either a b] -> [a]
+-- eitherLefts x = [a | Left a <- x]
 
-eitherRights   :: [Either a b] -> [b]
-eitherRights x = [a | Right a <- x]
-
-
-
--- astar = undefined
+-- eitherRights   :: [Either a b] -> [b]
+-- eitherRights x = [a | Right a <- x]
 
 
+astar :: TronMap -> Coord -> Coord -> (Bool, Int)
+astar tronMap startPos endPos =
+    case astar'
+         [(0.0, startPos)]
+         (M.singleton startPos (h startPos, 0, startPos))
+         S.empty
+         0 of
+      Left area -> (False, area)
+      Right _ -> (True, 0)
+    where
+      astar' :: [(Float, Coord)]
+             -> M.Map Coord (Float, Int, Coord)
+             -> S.Set Coord
+             -> Int
+             -> Either Int [Coord]
+      astar' openQ scores closed count =
+          case openQ of
+            [] -> Left count
+            ((_, p) : openQ') ->
+                if p == endPos
+                then
+                    -- FIXME: want path here
+                    Right $ reverse $ unfoldr cameFrom p
+                else
+                    astar' openQ'' scores' closed' (count + 1)
+                where
+                  (openQ'', scores') =
+                      foldl' updateN (openQ', scores) neighbours
 
-initPos :: TronMap -> Spot -> (Int, Int)
+                  updateN :: ([(Float, Coord)],
+                              M.Map Coord (Float, Int, Coord))
+                          -> Coord
+                          -> ([(Float, Coord)],
+                              M.Map Coord (Float, Int, Coord))
+                  updateN old@(myOpenQ, myScores) n =
+                      if (n `M.member` myScores) && not (nG' < nG)
+                      then old
+                      else (myOpenQ', myScores')
+
+                      where
+                        myScores' =
+                            M.insert n (nF', nG', p) myScores
+
+                        myOpenQ' :: [(Float, Coord)]
+                        myOpenQ' =
+                            insert (nF', n) $
+                                   deleteBy
+                                   (\(_, a) (_, b) -> a == b)
+                                   (0.0, n) myOpenQ
+                        nF' = f n nG'
+                        nG' = pG + 1
+
+                        (_nF, nG, _) =
+                            fromJust $ M.lookup p myScores
+
+
+                  closed' = S.insert p closed
+                  (_, pG, _) =
+                      fromJust $ M.lookup p scores
+
+                  neighbours =
+                      filter (`S.member` closed) $
+                      map (updatePos p) $
+                          possibleMoves tronMap p
+
+                  cameFrom :: Coord -> Maybe (Coord, Coord)
+                  cameFrom fromP =
+                      case M.lookup fromP scores of
+                        Just (_, _, fromP') ->
+                            Just (fromP', fromP')
+                        Nothing -> Nothing
+
+
+      f :: Coord -> Int -> Float
+      f p gp = fromIntegral gp + h p
+      h :: Coord -> Float
+      h p = euclidianDistance p endPos
+
+
+
+initPos :: TronMap -> Spot -> Coord
 initPos tronMap who =
     fst $ head $ filter ((== (showSpot who)) . snd) $ assocs tronMap
 
-possibleMoves :: TronMap -> (Int, Int) -> [Move]
+possibleMoves :: TronMap -> Coord -> [Move]
 possibleMoves tronMap position =
     -- trace ("possibleMoves " ++ show position ++
     --        showMap tronMap ++ show moves)
@@ -993,7 +1077,7 @@ possibleMoves tronMap position =
       possibleMove move =
           (tronMap ! updatePos position move) /= showSpot Wall
 
--- oneWayMove :: TronMap -> (Int, Int) -> Move -> Bool
+-- oneWayMove :: TronMap -> Coord -> Move -> Bool
 -- oneWayMove tronMap p m =
 --     case possibleMoves tronMap p' of
 --       [] -> True
@@ -1006,13 +1090,13 @@ possibleMoves tronMap position =
 --     where
 --       p' = updatePos p m
 
-updatePos :: (Int, Int) -> Move -> (Int, Int)
+updatePos :: Coord -> Move -> Coord
 updatePos (x, y) North = (x, y-1)
 updatePos (x, y) South = (x, y+1)
 updatePos (x, y) East = (x+1, y)
 updatePos (x, y) West = (x-1, y)
 
-crashed :: TronMap -> (Int, Int) -> Bool
+crashed :: TronMap -> Coord -> Bool
 crashed tronMap p = (tronMap ! p) /= showSpot Blank
 
 
@@ -1026,7 +1110,7 @@ crashed tronMap p = (tronMap ! p) /= showSpot Blank
 completeRound :: GameState -> Bool
 completeRound state = Player == toMove state
 
-moverPos :: GameState -> (Int, Int)
+moverPos :: GameState -> Coord
 moverPos state =
     case toMove state of
       Player -> playerPos state
