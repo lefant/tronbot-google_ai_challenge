@@ -535,21 +535,21 @@ distToHeuristic d s =
           else 0.8 - (d / s) ^ (3 :: Int) / 3
           -- 1.0 - d ^ (2 :: Int) / s ^ (2 :: Int) / 2
 
--- manhattanDistance :: Coord -> Coord -> Int
--- manhattanDistance (x1, y1) (x2, y2) =
---     max (abs (x1 - x2)) (abs (y1 - y2))
---     -- abs (x1 - x2) + abs (y1 - y2)
+manhattanDistance :: Coord -> Coord -> Int
+manhattanDistance (x1, y1) (x2, y2) =
+    abs (x1 - x2) + abs (y1 - y2)
+    -- max (abs (x1 - x2)) (abs (y1 - y2))
 
 pseudoEuclidianDistance :: Coord -> Coord -> Int
 pseudoEuclidianDistance (x1, y1) (x2, y2) =
     (abs (x1 - x2))^(2 :: Int) + (abs (y1 - y2))^(2 :: Int)
 
-euclidianDistance :: Coord -> Coord -> Float
-euclidianDistance (x1, y1) (x2, y2) =
-    sqrt $
-         fromIntegral
-         ((abs (x1 - x2))^(2 :: Int)
-          + (abs (y1 - y2))^(2 :: Int))
+-- euclidianDistance :: Coord -> Coord -> Float
+-- euclidianDistance (x1, y1) (x2, y2) =
+--     sqrt $
+--          fromIntegral
+--          ((abs (x1 - x2))^(2 :: Int)
+--           + (abs (y1 - y2))^(2 :: Int))
 
 
 
@@ -985,15 +985,15 @@ floodFill' a p@(x, y) = do
 astar :: TronMap -> Coord -> Coord -> (Bool, Int)
 astar tronMap startPos endPos =
     case astar'
-         [(0.0, startPos)]
+         [(0, startPos)]
          (M.singleton startPos (h startPos, 0, startPos))
          S.empty
          0 of
       Left area -> (False, area)
       Right _ -> (True, 0)
     where
-      astar' :: [(Float, Coord)]
-             -> M.Map Coord (Float, Int, Coord)
+      astar' :: [(Int, Coord)]
+             -> M.Map Coord (Int, Int, Coord)
              -> S.Set Coord
              -> Int
              -> Either Int [Coord]
@@ -1011,11 +1011,11 @@ astar tronMap startPos endPos =
                   (openQ'', scores') =
                       foldl' updateN (openQ', scores) neighbours
 
-                  updateN :: ([(Float, Coord)],
-                              M.Map Coord (Float, Int, Coord))
+                  updateN :: ([(Int, Coord)],
+                              M.Map Coord (Int, Int, Coord))
                           -> Coord
-                          -> ([(Float, Coord)],
-                              M.Map Coord (Float, Int, Coord))
+                          -> ([(Int, Coord)],
+                              M.Map Coord (Int, Int, Coord))
                   updateN old@(myOpenQ, myScores) n =
                       if (n `M.member` myScores) && not (nG' < nG)
                       then old
@@ -1025,12 +1025,12 @@ astar tronMap startPos endPos =
                         myScores' =
                             M.insert n (nF', nG', p) myScores
 
-                        myOpenQ' :: [(Float, Coord)]
+                        myOpenQ' :: [(Int, Coord)]
                         myOpenQ' =
                             insert (nF', n) $
                                    deleteBy
                                    (\(_, a) (_, b) -> a == b)
-                                   (0.0, n) myOpenQ
+                                   (0, n) myOpenQ
                         nF' = f n nG'
                         nG' = pG + 1
 
@@ -1055,10 +1055,10 @@ astar tronMap startPos endPos =
                         Nothing -> Nothing
 
 
-      f :: Coord -> Int -> Float
-      f p gp = fromIntegral gp + h p
-      h :: Coord -> Float
-      h p = euclidianDistance p endPos
+      f :: Coord -> Int -> Int
+      f p gp = gp + h p
+      h :: Coord -> Int
+      h p = manhattanDistance p endPos
 
 
 
