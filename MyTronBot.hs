@@ -375,9 +375,9 @@ instance UctNode GameState where
         then
             finalResult' pC eC (lastToMove state)
         else
-            trace ("finalResult regular divided"
-                   ++ show ((lastToMove state), res, diff, pA, eA))
-            $
+            -- trace ("finalResult regular divided"
+            --        ++ show ((lastToMove state), res, diff, pA, eA))
+            -- $
             if (lastToMove state) == Player
             then res
             else 1 - res
@@ -483,30 +483,30 @@ astarHeuristic state =
       ePos = enemyPos state
       path = shortestPath state
 
-distanceHeuristic :: GameState -> Float
-distanceHeuristic state =
-    distToHeuristic dist size
-    where
-      size = fromIntegral $
-             -- maxX state + maxY state
-             ((maxX state) - 2) ^ (2 :: Int)
-             + ((maxY state) - 2) ^ (2 :: Int)
-      dist = fromIntegral $
-             pseudoEuclidianDistance pPos ePos
-             -- (manhattanDistance pPos ePos) ^ (2 :: Int)
-      pPos = playerPos state
-      ePos = enemyPos state
+-- distanceHeuristic :: GameState -> Float
+-- distanceHeuristic state =
+--     distToHeuristic dist size
+--     where
+--       size = fromIntegral $
+--              -- maxX state + maxY state
+--              ((maxX state) - 2) ^ (2 :: Int)
+--              + ((maxY state) - 2) ^ (2 :: Int)
+--       dist = fromIntegral $
+--              pseudoEuclidianDistance pPos ePos
+--              -- (manhattanDistance pPos ePos) ^ (2 :: Int)
+--       pPos = playerPos state
+--       ePos = enemyPos state
 
-distToHeuristic :: Float -> Float -> Float
-distToHeuristic d s =
-    -- trace ("distToHeuristic " ++ show (d, s, h))
-    h
-    where
-      h =
-          if d < 3
-          then 0.5
-          else 0.8 - (d / s) ^ (3 :: Int) / 3
-          -- 1.0 - d ^ (2 :: Int) / s ^ (2 :: Int) / 2
+-- distToHeuristic :: Float -> Float -> Float
+-- distToHeuristic d s =
+--     -- trace ("distToHeuristic " ++ show (d, s, h))
+--     h
+--     where
+--       h =
+--           if d < 3
+--           then 0.5
+--           else 0.8 - (d / s) ^ (3 :: Int) / 3
+--           -- 1.0 - d ^ (2 :: Int) / s ^ (2 :: Int) / 2
 
 manhattanDistance :: Coord -> Coord -> Int
 manhattanDistance (x1, y1) (x2, y2) =
@@ -517,9 +517,9 @@ maxManhattanDistance (x1, y1) (x2, y2) =
     -- abs (x1 - x2) + abs (y1 - y2)
     max (abs (x1 - x2)) (abs (y1 - y2))
 
-pseudoEuclidianDistance :: Coord -> Coord -> Int
-pseudoEuclidianDistance (x1, y1) (x2, y2) =
-    (abs (x1 - x2))^(2 :: Int) + (abs (y1 - y2))^(2 :: Int)
+-- pseudoEuclidianDistance :: Coord -> Coord -> Int
+-- pseudoEuclidianDistance (x1, y1) (x2, y2) =
+--     (abs (x1 - x2))^(2 :: Int) + (abs (y1 - y2))^(2 :: Int)
 
 -- euclidianDistance :: Coord -> Coord -> Float
 -- euclidianDistance (x1, y1) (x2, y2) =
