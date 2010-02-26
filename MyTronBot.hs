@@ -22,11 +22,11 @@ import Text.Printf (printf)
 import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
 import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
-import Debug.Trace (trace)
+-- import Debug.Trace (trace)
 
 maybeTrace :: String -> b -> b
-maybeTrace = trace
--- maybeTrace _ = id
+-- maybeTrace = trace
+maybeTrace _ = id
 
 
 type TronMap = UArray Coord Char
@@ -240,13 +240,13 @@ debugUctEnd initTree initTronMap =
           where
             pPos = playerPosEnd state
 
-debugAstar :: [Coord] -> TronMap -> TronMap
-debugAstar ps initTronMap =
-    foldl' updateMap initTronMap (tail ps)
-    where
-      updateMap :: TronMap -> Coord -> TronMap
-      updateMap t p =
-          t // [(p, '.')]
+-- debugAstar :: [Coord] -> TronMap -> TronMap
+-- debugAstar ps initTronMap =
+--     foldl' updateMap initTronMap (tail ps)
+--     where
+--       updateMap :: TronMap -> Coord -> TronMap
+--       updateMap t p =
+--           t // [(p, '.')]
 
 
 showTronMap :: TronMap -> String
@@ -419,8 +419,7 @@ instance UctNode GameState where
           tronMap = getTronMap state
 
     heuristic state =
-        (astarHeuristic state, 200)
-        -- (distanceHeuristic state, 1000)
+        astarHeuristic state
 
     updateResult _state result =
         1 - result
@@ -440,6 +439,9 @@ instance UctNode EndGameState where
         playerCrashedEnd state
 
     finalResult state =
+        -- trace ("finalResult endgame "
+        --        ++ show (moveCount, maxCount,(playerPosEnd state))
+        --       )
         finalResultEnd' moveCount maxCount
         where
           moveCount = length $ moveHistoryEnd state
@@ -447,7 +449,12 @@ instance UctNode EndGameState where
 
 
     randomEvalOnce state rGen =
-        runOneRandomSTEnd state rGen
+        -- trace ("randomEvalOnce endgame "
+        --        ++ (show result)
+        --       )
+        result
+        where
+          result = runOneRandomSTEnd state rGen
 
     children state =
         -- trace ("children " ++
@@ -473,11 +480,17 @@ instance UctNode EndGameState where
     updateResult _state = id
 
 
-astarHeuristic :: GameState -> Float
+astarHeuristic :: GameState -> (Float, Int)
 astarHeuristic state =
-    if (pPos `elem` path) || (ePos `elem` path)
-    then 1.0
-    else 0.5
+    if (manhattanDistance ePos pPos) < 10
+    then
+        if (pPos `elem` path) || (ePos `elem` path)
+        then (1.0, 10)
+        else (0.5, 1)
+    else
+        if (pPos `elem` path) || (ePos `elem` path)
+        then (1.0, 100)
+        else (0.5, 1)
     where
       pPos = playerPos state
       ePos = enemyPos state
@@ -602,10 +615,11 @@ runOneRandomSTEnd initState initGen =
         pPos' <- return $ updatePos pPos pMove
         pCrashed <- crashedST tronArray pPos'
         writeArray tronArray pPos (showSpot Wall)
-        writeArray tronArray pPos (showSpot Player)
+        writeArray tronArray pPos' (showSpot Player)
         (if pCrashed
           then
-              return $ finalResultEnd' runCount initMaxArea
+              return $
+                     finalResultEnd' runCount initMaxArea
           else
               run tronArray rGen' (runCount + 1) pPos')
 
@@ -921,7 +935,11 @@ finalResult' pCrashed eCrashed who =
 
 finalResultEnd' :: Int -> Int -> Float
 finalResultEnd' moveCount maxCount =
-    fromIntegral moveCount / fromIntegral maxCount
+    -- trace ("finalResultEnd' "
+    --        ++ show (result, moveCount, maxCount))
+    result
+    where
+      result = fromIntegral moveCount / fromIntegral maxCount
 
 
 
