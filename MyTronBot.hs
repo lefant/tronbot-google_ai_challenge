@@ -85,8 +85,8 @@ makeTronMap w h str =
 
 runBot :: TronMap -> Int -> Int -> StdGen -> IO Move
 runBot tronMap w h rGen =
-    if metOther
-    then
+    case astar tronMap pPos ePos of
+      Right path ->
         uctBot
         GameState { getTronMap = tronMap
                   , ourRandomGen = rGen
@@ -97,10 +97,11 @@ runBot tronMap w h rGen =
                   , enemyPos = initPos tronMap Enemy
                   , maxX = w
                   , maxY = h
-                  , maxArea = pA
+                  -- , maxArea = pA
                   , toMove = Player
+                  , shortestPath = path
                   }
-    else
+      Left pA ->
         uctBotEnd
         EndGameState { getTronMapEnd = tronMap
                      , moveHistoryEnd = []
@@ -112,8 +113,9 @@ runBot tronMap w h rGen =
                      , maxAreaEnd = pA
     }
     where
-      (metOther, pA) = floodFill tronMap pPos
+      -- (metOther, pA) = floodFill tronMap pPos
       pPos = initPos tronMap Player
+      ePos = initPos tronMap Enemy
 
 
 uctBot :: GameState -> IO Move
@@ -238,6 +240,13 @@ debugUctEnd initTree initTronMap =
           where
             pPos = playerPosEnd state
 
+debugAstar :: [Coord] -> TronMap -> TronMap
+debugAstar ps initTronMap =
+    foldl' updateMap initTronMap (tail ps)
+    where
+      updateMap :: TronMap -> Coord -> TronMap
+      updateMap t p =
+          t // [(p, '.')]
 
 
 showTronMap :: TronMap -> String
@@ -317,7 +326,8 @@ data GameState = GameState {
      ,maxX            :: Int
      ,maxY            :: Int
      ,toMove          :: Spot
-     ,maxArea         :: Int
+     ,shortestPath    :: [Coord]
+     -- ,maxArea         :: Int
     }
 
 data EndGameState = EndGameState {
@@ -351,9 +361,13 @@ instance UctNode GameState where
           complete = completeRound state
           anyCrashes =
               playerCrashed state || enemyCrashed state
-          divided = not . fst $ floodFill tronMap pPos
+          divided =
+              case astar tronMap pPos ePos of
+                Left _pA -> True
+                Right _path -> False
           tronMap = getTronMap state
           pPos = playerPos state
+          ePos = enemyPos state
               
 
     finalResult state =
@@ -361,6 +375,9 @@ instance UctNode GameState where
         then
             finalResult' pC eC (lastToMove state)
         else
+            trace ("finalResult regular "
+                   ++ show ((lastToMove state), res))
+            $
             if (lastToMove state) == Player
             then res
             else 1 - res
@@ -403,25 +420,6 @@ instance UctNode GameState where
 
     heuristic state =
         (distanceHeuristic state, 1000)
-        -- if divided state
-        -- then (0.5, 1)
-        --     -- (areaHeuristic state, 10000)
-        --     -- (fillerHeuristic state, 100)
-        -- else
-
-        -- -- (0.5, 1)
-        -- case floodFill tronMap pPos of
-        --   Left MetOther ->
-        --       (distToHeuristic dist size, 1000)
-        --   Right pArea ->
-        --       case floodFill tronMap ePos of
-        --         Left MetOther ->
-        --             error "floodFill from enemy finds player when floodFill from player does not find enemy"
-        --         Right eArea ->
-        --             (areasToHeuristic
-        --              (fromIntegral pArea)
-        --              (fromIntegral eArea),
-        --              1000)
 
     updateResult _state result =
         1 - result
@@ -449,17 +447,6 @@ instance UctNode EndGameState where
 
     randomEvalOnce state rGen =
         runOneRandomSTEnd state rGen
-        -- if divided state
-        -- then runOneRandom state rGen
-        -- else
-        --     case floodFill tronMap pPos of
-        --       Left MetOther ->
-        --           runOneRandom state rGen
-        --       Right _n ->
-        --           areaHeuristic state
-        -- where
-        --   tronMap = getTronMap state
-        --   pPos = playerPos state
 
     children state =
         -- trace ("children " ++
@@ -484,31 +471,6 @@ instance UctNode EndGameState where
 
     updateResult _state = id
 
--- areaHeuristic :: GameState -> Float
--- areaHeuristic state =
---     case floodFill tronMap (playerPos state) of
---       Left MetOther ->
---           error "randomEvalOnce player MetOther when divided"
---       Right pA ->
---           case floodFill tronMap (enemyPos state) of
---             Left MetOther ->
---                 error "randomEvalOnce enemy MetOther when divided"
---             Right eA ->
---                 if diff > 5
---                 then 1.0
---                 else if diff < -5
---                      then 0.0
---                      else 0.5 + (diff / 10)
---                 where
---                   diff = fromIntegral $ pA - eA
---      where
---       tronMap = getTronMap state
-
--- fillerHeuristic :: GameState -> Float
--- fillerHeuristic state =
---     if 2 == (length $ possibleMoves (getTronMap state) (playerPos state))
---     then 0.75
---     else 0.25
 
 distanceHeuristic :: GameState -> Float
 distanceHeuristic state =
@@ -949,8 +911,6 @@ finalResultEnd' moveCount maxCount =
 
 
 
-data MetOther = MetOther deriving (Eq, Show)
-
 floodFill :: TronMap -> Coord -> (Bool, Int)
 floodFill initTronMap initP =
     runST $ (do a <- thaw initTronMap
@@ -982,29 +942,39 @@ floodFill' a p@(x, y) = do
 -- eitherRights x = [a | Right a <- x]
 
 
-astar :: TronMap -> Coord -> Coord -> (Bool, Int)
+astar :: TronMap -> Coord -> Coord -> Either Int [Coord]
 astar tronMap startPos endPos =
-    case astar'
-         [(0, startPos)]
-         (M.singleton startPos (h startPos, 0, startPos))
-         S.empty
-         0 of
-      Left area -> (False, area)
-      Right _ -> (True, 0)
+    astar'
+    [(0, startPos)]
+    (M.singleton startPos (h startPos, 0, Nothing))
+    S.empty
+    0
+    -- Left area -> (False, area)
+    -- Right _ -> (True, 0)
     where
       astar' :: [(Int, Coord)]
-             -> M.Map Coord (Int, Int, Coord)
+             -> M.Map Coord (Int, Int, Maybe Coord)
              -> S.Set Coord
              -> Int
              -> Either Int [Coord]
       astar' openQ scores closed count =
           case openQ of
-            [] -> Left count
+            [] ->
+                -- trace ("astar' openQ empty, done " ++ show count)
+                Left count
             ((_, p) : openQ') ->
+                -- trace ("astar' "
+                --        ++ show p ++ "\n"
+                --        ++ show neighbours ++ "\n"
+                --        ++ show openQ ++ "\n"
+                --       ) $
                 if p == endPos
                 then
-                    -- FIXME: want path here
-                    Right $ reverse $ unfoldr cameFrom p
+                    maybeTrace ("astar' goal reached, done\n"
+                                ++ (showTronMap (debugAstar path tronMap))
+                                ++ "\n"
+                               ) $
+                    Right path
                 else
                     astar' openQ'' scores' closed' (count + 1)
                 where
@@ -1012,10 +982,10 @@ astar tronMap startPos endPos =
                       foldl' updateN (openQ', scores) neighbours
 
                   updateN :: ([(Int, Coord)],
-                              M.Map Coord (Int, Int, Coord))
+                              M.Map Coord (Int, Int, Maybe Coord))
                           -> Coord
                           -> ([(Int, Coord)],
-                              M.Map Coord (Int, Int, Coord))
+                              M.Map Coord (Int, Int, Maybe Coord))
                   updateN old@(myOpenQ, myScores) n =
                       if (n `M.member` myScores) && not (nG' < nG)
                       then old
@@ -1023,7 +993,7 @@ astar tronMap startPos endPos =
 
                       where
                         myScores' =
-                            M.insert n (nF', nG', p) myScores
+                            M.insert n (nF', nG', Just p) myScores
 
                         myOpenQ' :: [(Int, Coord)]
                         myOpenQ' =
@@ -1043,16 +1013,18 @@ astar tronMap startPos endPos =
                       fromJust $ M.lookup p scores
 
                   neighbours =
-                      filter (`S.member` closed) $
+                      filter (not . (`S.member` closed)) $
                       map (updatePos p) $
                           possibleMoves tronMap p
+
+                  path = reverse $ unfoldr cameFrom p
 
                   cameFrom :: Coord -> Maybe (Coord, Coord)
                   cameFrom fromP =
                       case M.lookup fromP scores of
-                        Just (_, _, fromP') ->
+                        Just (_, _, Just fromP') ->
                             Just (fromP', fromP')
-                        Nothing -> Nothing
+                        _otherwise -> Nothing
 
 
       f :: Coord -> Int -> Int
