@@ -1,4 +1,4 @@
-{-# OPTIONS -O2 -Wall -Werror -Wwarn #-}
+
 {-# LANGUAGE FlexibleInstances #-}
 
 import System.IO (hSetBuffering, stdin, stdout, BufferMode(..))
@@ -20,11 +20,11 @@ import Text.Printf (printf)
 import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
 import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
-import Debug.Trace (trace)
+-- import Debug.Trace (trace)
 
 maybeTrace :: String -> b -> b
-maybeTrace = trace
--- maybeTrace _ = id
+-- maybeTrace = trace
+maybeTrace _ = id
 
 
 type TronMap = UArray (Int, Int) Char
@@ -402,7 +402,7 @@ instance UctNode GameState where
           tronMap = getTronMap state
 
     heuristic state =
-        (distanceHeuristic state, 100000)
+        (distanceHeuristic state, 1000)
         -- if divided state
         -- then (0.5, 1)
         --     -- (areaHeuristic state, 10000)
