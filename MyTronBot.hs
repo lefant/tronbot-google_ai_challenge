@@ -353,18 +353,18 @@ instance UctNode GameState where
     exploratoryConstant _state = 0.5
 
     isTerminalNode state =
-        -- trace ("isTerminalNode " ++
-        --        (show (state, ("complete",complete), ("crashes",anyCrashes), result)))
-        result
+        completeRound state &&
+        (or [ playerCrashed state
+            , enemyCrashed state
+            , divided])
         where
-          result = complete && anyCrashes || divided
-          complete = completeRound state
-          anyCrashes =
-              playerCrashed state || enemyCrashed state
           divided =
-              case astar tronMap pPos ePos of
-                Left _pA -> True
-                Right _path -> False
+              if (manhattanDistance pPos ePos) > 20
+              then False
+              else
+                  case astar tronMap pPos ePos of
+                    Left _pA -> True
+                    Right _path -> False
           tronMap = getTronMap state
           pPos = playerPos state
           ePos = enemyPos state
@@ -375,8 +375,8 @@ instance UctNode GameState where
         then
             finalResult' pC eC (lastToMove state)
         else
-            trace ("finalResult regular "
-                   ++ show ((lastToMove state), res))
+            trace ("finalResult regular divided"
+                   ++ show ((lastToMove state), res, diff, pA, eA))
             $
             if (lastToMove state) == Player
             then res
@@ -395,7 +395,7 @@ instance UctNode GameState where
 
           tronMap = getTronMap state
           pPos = playerPos state
-          ePos = playerPos state
+          ePos = enemyPos state
           pC = playerCrashed state
           eC = enemyCrashed state
 
@@ -419,7 +419,8 @@ instance UctNode GameState where
           tronMap = getTronMap state
 
     heuristic state =
-        (distanceHeuristic state, 1000)
+        (astarHeuristic state, 200)
+        -- (distanceHeuristic state, 1000)
 
     updateResult _state result =
         1 - result
@@ -472,6 +473,16 @@ instance UctNode EndGameState where
     updateResult _state = id
 
 
+astarHeuristic :: GameState -> Float
+astarHeuristic state =
+    if (pPos `elem` path) || (ePos `elem` path)
+    then 1.0
+    else 0.5
+    where
+      pPos = playerPos state
+      ePos = enemyPos state
+      path = shortestPath state
+
 distanceHeuristic :: GameState -> Float
 distanceHeuristic state =
     distToHeuristic dist size
@@ -500,7 +511,11 @@ distToHeuristic d s =
 manhattanDistance :: Coord -> Coord -> Int
 manhattanDistance (x1, y1) (x2, y2) =
     abs (x1 - x2) + abs (y1 - y2)
-    -- max (abs (x1 - x2)) (abs (y1 - y2))
+
+maxManhattanDistance :: Coord -> Coord -> Int
+maxManhattanDistance (x1, y1) (x2, y2) =
+    -- abs (x1 - x2) + abs (y1 - y2)
+    max (abs (x1 - x2)) (abs (y1 - y2))
 
 pseudoEuclidianDistance :: Coord -> Coord -> Int
 pseudoEuclidianDistance (x1, y1) (x2, y2) =
@@ -932,7 +947,7 @@ floodFill' a p@(x, y) = do
            s <- floodFill' a (x, y+1)
            e <- floodFill' a (x+1, y)
            w <- floodFill' a (x-1, y)
-           return (or $ map fst [n,s,e,w], sum $ map snd [n,s,e,w]))
+           return (or $ map fst [n,s,e,w], 1 + (sum $ map snd [n,s,e,w])))
      other -> error ("floodFill' encountered " ++ show other))
 
 -- eitherLefts   :: [Either a b] -> [a]
@@ -970,10 +985,10 @@ astar tronMap startPos endPos =
                 --       ) $
                 if p == endPos
                 then
-                    maybeTrace ("astar' goal reached, done\n"
-                                ++ (showTronMap (debugAstar path tronMap))
-                                ++ "\n"
-                               ) $
+                    -- maybeTrace ("astar' goal reached, done\n"
+                    --             ++ (showTronMap (debugAstar path tronMap))
+                    --             ++ "\n"
+                    --            ) $
                     Right path
                 else
                     astar' openQ'' scores' closed' (count + 1)
@@ -1030,7 +1045,8 @@ astar tronMap startPos endPos =
       f :: Coord -> Int -> Int
       f p gp = gp + h p
       h :: Coord -> Int
-      h p = manhattanDistance p endPos
+      -- h p = manhattanDistance p endPos
+      h p = maxManhattanDistance p endPos
 
 
 
