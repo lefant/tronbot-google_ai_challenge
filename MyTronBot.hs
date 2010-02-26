@@ -22,11 +22,11 @@ import Text.Printf (printf)
 import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
 import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
--- import Debug.Trace (trace)
+import Debug.Trace (trace)
 
 maybeTrace :: String -> b -> b
--- maybeTrace = trace
-maybeTrace _ = id
+maybeTrace = trace
+-- maybeTrace _ = id
 
 
 type TronMap = UArray Coord Char
@@ -350,7 +350,7 @@ instance Show GameState where
               show $ reverse moves
 
 instance UctNode GameState where
-    exploratoryConstant _state = 0.5
+    exploratoryConstant _state = 0.2
 
     isTerminalNode state =
         completeRound state &&
@@ -359,7 +359,7 @@ instance UctNode GameState where
             , divided])
         where
           divided =
-              if (manhattanDistance pPos ePos) > 20
+              if (manhattanDistance pPos ePos) > 5
               then False
               else
                   case astar tronMap pPos ePos of
@@ -433,7 +433,7 @@ instance Show EndGameState where
               show $ reverse moves
 
 instance UctNode EndGameState where
-    exploratoryConstant _state = 1.0
+    exploratoryConstant _state = 0.2
 
     isTerminalNode state =
         playerCrashedEnd state
@@ -471,7 +471,7 @@ instance UctNode EndGameState where
 
     heuristic state =
         (((runOneRandomSTEnd state rGen) + fromIntegral pA)
-         / (fromIntegral (maxAreaEnd state)) / 2, 10)
+         / (fromIntegral (maxAreaEnd state)) / 2, 5)
         where
           (_, pA) =
               floodFill (getTronMapEnd state) (playerPosEnd state)
@@ -482,16 +482,16 @@ instance UctNode EndGameState where
 
 astarHeuristic :: GameState -> (Float, Int)
 astarHeuristic state =
-    if (manhattanDistance ePos pPos) < 10
+    if (pPos `elem` path) || (ePos `elem` path)
     then
-        if (pPos `elem` path) || (ePos `elem` path)
-        then (1.0, 10)
-        else (0.5, 1)
-    else
-        if (pPos `elem` path) || (ePos `elem` path)
-        then (1.0, 100)
-        else (0.5, 1)
+        if d < 5
+        then (0.75, 5)
+        else if d < 10
+             then (0.75, 30)
+             else (1.0, 100)
+    else (0.5, 1)
     where
+      d = manhattanDistance ePos pPos
       pPos = playerPos state
       ePos = enemyPos state
       path = shortestPath state
