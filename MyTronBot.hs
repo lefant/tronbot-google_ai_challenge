@@ -17,6 +17,7 @@ import Data.Ord (comparing)
 import Text.Printf (printf)
 
 -- import Data.Array.Diff
+import qualified Data.IntMap as M ()
 import Data.Array.Unboxed (UArray, array, (//), (!), assocs, indices, elems)
 import Data.Array.ST (STUArray, thaw, readArray, writeArray)
 
@@ -83,32 +84,34 @@ makeTronMap w h str =
 
 runBot :: TronMap -> Int -> Int -> StdGen -> IO Move
 runBot tronMap w h rGen =
-    case floodFill tronMap pPos of
-      Left MetOther ->
-          uctBot
-          GameState { getTronMap = tronMap
-                    , ourRandomGen = rGen
-                    , moveHistory = []
-                    , playerCrashed = False
-                    , enemyCrashed = False
-                    , playerPos = pPos
-                    , enemyPos = initPos tronMap Enemy
-                    , maxX = w
-                    , maxY = h
-                    , toMove = Player
-                    }
-      Right pA ->
-          uctBotEnd
-          EndGameState { getTronMapEnd = tronMap
-                       , moveHistoryEnd = []
-                       , ourRandomGenEnd = rGen
-                       , playerCrashedEnd = False
-                       , playerPosEnd = pPos
-                       , maxXEnd = w
-                       , maxYEnd = h
-                       , maxArea = pA
+    if metOther
+    then
+        uctBot
+        GameState { getTronMap = tronMap
+                  , ourRandomGen = rGen
+                  , moveHistory = []
+                  , playerCrashed = False
+                  , enemyCrashed = False
+                  , playerPos = pPos
+                  , enemyPos = initPos tronMap Enemy
+                  , maxX = w
+                  , maxY = h
+                  , maxArea = pA
+                  , toMove = Player
+                  }
+    else
+        uctBotEnd
+        EndGameState { getTronMapEnd = tronMap
+                     , moveHistoryEnd = []
+                     , ourRandomGenEnd = rGen
+                     , playerCrashedEnd = False
+                     , playerPosEnd = pPos
+                     , maxXEnd = w
+                     , maxYEnd = h
+                     , maxAreaEnd = pA
     }
     where
+      (metOther, pA) = floodFill tronMap pPos
       pPos = initPos tronMap Player
 
 
@@ -312,6 +315,7 @@ data GameState = GameState {
      ,maxX            :: Int
      ,maxY            :: Int
      ,toMove          :: Spot
+     ,maxArea         :: Int
     }
 
 data EndGameState = EndGameState {
@@ -322,7 +326,7 @@ data EndGameState = EndGameState {
     , playerPosEnd       :: (Int,Int)
     , maxXEnd            :: Int
     , maxYEnd            :: Int
-    , maxArea            :: Int
+    , maxAreaEnd         :: Int
     }
 
 
@@ -345,10 +349,7 @@ instance UctNode GameState where
           complete = completeRound state
           anyCrashes =
               playerCrashed state || enemyCrashed state
-          divided =
-              case floodFill tronMap pPos of
-                Left MetOther -> False
-                Right _pA -> True
+          divided = not . fst $ floodFill tronMap pPos
           tronMap = getTronMap state
           pPos = playerPos state
               
@@ -358,24 +359,21 @@ instance UctNode GameState where
         then
             finalResult' pC eC (lastToMove state)
         else
-            case floodFill tronMap pPos of
-              Left MetOther ->
-                  error "finalResult called on non-final"
-              Right pA ->
-                  case floodFill tronMap ePos of
-                    Left MetOther ->
-                        error "floodFill from enemy finds player when floodFill from player does not find enemy"
-                    Right eA ->
-                        -- correct if (lastToMove state) == Player
-                        -- otherwise 1 - x
-                        if diff > 5
-                        then 1.0
-                        else if diff < -5
-                             then 0.0
-                             else 0.5 + (diff / 20)
-                        where
-                          diff = fromIntegral pA - fromIntegral eA
+            if (lastToMove state) == Player
+            then res
+            else 1 - res
+
         where
+          res = if diff > 5
+                then 1.0
+                else if diff < -5
+                     then 0.0
+                     else 0.5 + (diff / 20)
+          diff = fromIntegral pA - fromIntegral eA
+
+          (_, pA) = floodFill tronMap pPos
+          (_, eA) = floodFill tronMap ePos
+
           tronMap = getTronMap state
           pPos = playerPos state
           ePos = playerPos state
@@ -444,7 +442,7 @@ instance UctNode EndGameState where
         finalResultEnd' moveCount maxCount
         where
           moveCount = length $ moveHistoryEnd state
-          maxCount = maxArea state
+          maxCount = maxAreaEnd state
 
 
     randomEvalOnce state rGen =
@@ -475,17 +473,11 @@ instance UctNode EndGameState where
           tronMap = getTronMapEnd state
 
     heuristic state =
-        case floodFill
-                 (getTronMapEnd state)
-                 (playerPosEnd state) of
-          Left MetOther ->
-              error "randomEvalOnce player MetOther in endgame"
-          Right pA ->
-              -- ((fromIntegral pA)
-              --   / (fromIntegral (maxArea state)), 1000)
-              (((runOneRandomSTEnd state rGen) + fromIntegral pA)
-                / (fromIntegral (maxArea state)) / 2, 10)
+        (((runOneRandomSTEnd state rGen) + fromIntegral pA)
+         / (fromIntegral (maxAreaEnd state)) / 2, 10)
         where
+          (_, pA) =
+              floodFill (getTronMapEnd state) (playerPosEnd state)
           rGen = ourRandomGenEnd state
 
     updateResult _state = id
@@ -550,33 +542,6 @@ euclidianDistance :: (Int, Int) -> (Int, Int) -> Int
 euclidianDistance (x1, y1) (x2, y2) =
     (abs (x1 - x2))^(2 :: Int) + (abs (y1 - y2))^(2 :: Int)
 
-
--- floodFill' :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s (Either MetOther Int)
--- floodFill' a p@(x, y) = do
---   v <- readArray a p
---   (case v of
---      'X' -> return $ Right 0
---      '#' -> return $ Right 0
---      '2' -> return $ Left MetOther
---      '1' -> return $ Left MetOther
---      ' ' ->
---          (do
---            writeArray a p 'X'
---            n <- floodFill' a (x, y-1)
---            s <- floodFill' a (x, y+1)
---            e <- floodFill' a (x+1, y)
---            w <- floodFill' a (x-1, y)
---            (if null $ eitherLefts [n,s,e,w]
---             then return $ Right (1 + (sum $ eitherRights [n,s,e,w]))
---             else return $ Left MetOther))
---      other -> error ("floodFill' encountered " ++ show other))
-
-
--- floodFill :: TronMap -> (Int, Int) -> Either MetOther Int
--- floodFill initTronMap initP =
---     runST $ (do a <- thaw initTronMap
---                 writeArray a initP ' '
---                 floodFill' a initP)
 
 
 runOneRandomST :: GameState -> StdGen -> Float
@@ -671,7 +636,7 @@ runOneRandomSTEnd initState initGen =
 
       initTronMap = getTronMapEnd initState
       initPPos = playerPosEnd initState
-      initMaxArea = maxArea initState
+      initMaxArea = maxAreaEnd initState
 
 
 
@@ -786,7 +751,7 @@ genMoveRand moveList rGen =
 --                , [West, East, South, North]
 --                ] initGen
 
---       initMaxArea = maxArea initState
+--       initMaxArea = maxAreaEnd initState
 
 
 -- genMoveRandEnd :: [Move] -> StdGen -> (Int,Int) -> TronMap
@@ -977,20 +942,20 @@ finalResultEnd' moveCount maxCount =
 
 data MetOther = MetOther deriving (Eq, Show)
 
-floodFill :: TronMap -> (Int, Int) -> Either MetOther Int
+floodFill :: TronMap -> (Int, Int) -> (Bool, Int)
 floodFill initTronMap initP =
     runST $ (do a <- thaw initTronMap
                 writeArray a initP ' '
                 floodFill' a initP)
 
-floodFill' :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s (Either MetOther Int)
+floodFill' :: (STUArray s (Int, Int) Char) -> (Int, Int) -> ST s (Bool, Int)
 floodFill' a p@(x, y) = do
   v <- readArray a p
   (case v of
-     'X' -> return $ Right 0
-     '#' -> return $ Right 0
-     '2' -> return $ Left MetOther
-     '1' -> return $ Left MetOther
+     'X' -> return $ (False, 0)
+     '#' -> return $ (False, 0)
+     '2' -> return $ (True, 0)
+     '1' -> return $ (True, 0)
      ' ' ->
          (do
            writeArray a p 'X'
@@ -998,9 +963,7 @@ floodFill' a p@(x, y) = do
            s <- floodFill' a (x, y+1)
            e <- floodFill' a (x+1, y)
            w <- floodFill' a (x-1, y)
-           (if null $ eitherLefts [n,s,e,w]
-            then return $ Right (1 + (sum $ eitherRights [n,s,e,w]))
-            else return $ Left MetOther))
+           return (or $ map fst [n,s,e,w], sum $ map snd [n,s,e,w]))
      other -> error ("floodFill' encountered " ++ show other))
 
 eitherLefts   :: [Either a b] -> [a]
@@ -1008,6 +971,11 @@ eitherLefts x = [a | Left a <- x]
 
 eitherRights   :: [Either a b] -> [b]
 eitherRights x = [a | Right a <- x]
+
+
+
+-- astar = undefined
+
 
 
 initPos :: TronMap -> Spot -> (Int, Int)
