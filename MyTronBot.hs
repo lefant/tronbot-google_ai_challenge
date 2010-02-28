@@ -961,11 +961,14 @@ floodFill' a p@(x, y) = do
      ' ' ->
          (do
            writeArray a p 'X'
-           n <- floodFill' a (x, y-1)
-           s <- floodFill' a (x, y+1)
-           e <- floodFill' a (x+1, y)
-           w <- floodFill' a (x-1, y)
-           return (or $ map fst [n,s,e,w], 1 + (sum $ map snd [n,s,e,w])))
+           neighbours <- mapM (floodFill' a)
+                         [ (x, y-1)
+                         , (x, y+1)
+                         , (x+1, y)
+                         , (x-1, y)
+                         ]
+           return (or $ map fst neighbours,
+                   1 + (sum $ map snd neighbours)))
      other -> error ("floodFill' encountered " ++ show other))
 
 -- eitherLefts   :: [Either a b] -> [a]
